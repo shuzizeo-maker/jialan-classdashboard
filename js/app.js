@@ -41,6 +41,7 @@ function defaults() {
       className: '六年甲班',
       schoolYear: '',
       semester: '',
+      studentEdit: false,
       announcement: '歡迎蒞臨臺東縣金峰鄉嘉蘭國民小學',
       maxSeat: 20,
       vacant: [],
@@ -236,9 +237,13 @@ function renderContact() {
   $('#contactList').innerHTML = items.map(it =>
     `<li style="${old ? 'opacity:.55' : ''}"><span class="txt">${esc(it.text)}</span>${old ? '' : `<button class="del" data-id="${it.id}" title="刪除">✕</button>`}</li>`).join('');
   $('#contactEmpty').classList.toggle('hidden', items.length > 0);
+  updateLockUI();
 }
+const canEditBoard = () => state.settings.studentEdit || isAuthed();
+$$('.lock-hint').forEach(b => b.onclick = () => teacherOpen('unlock'));
 $('#contactForm').addEventListener('submit', e => {
   e.preventDefault();
+  if (!canEditBoard()) return;
   const v = $('#contactInput').value.trim(); if (!v) return;
   const key = dateKey();
   (state.contact[key] ||= []).push({ id: uid(), text: v });
@@ -248,7 +253,7 @@ $('#contactForm').addEventListener('submit', e => {
   save(); renderContact();
 });
 $('#contactList').addEventListener('click', e => {
-  const b = e.target.closest('.del'); if (!b) return;
+  const b = e.target.closest('.del'); if (!b || !canEditBoard()) return;
   const key = dateKey();
   state.contact[key] = (state.contact[key] || []).filter(i => i.id !== b.dataset.id);
   save(); renderContact();
@@ -268,15 +273,17 @@ function renderCountdowns() {
       <div class="info"><b>${esc(c.name)}</b><span>${c.date.replace(/-/g, '/')}（${WEEK[new Date(c.date + 'T00:00').getDay()]}）</span></div>
       <button class="del" data-id="${c.id}" title="刪除">✕</button></li>`;
   }).join('') : '<div class="empty">還沒有倒數事件，在下方新增，例如：校慶、段考、畢業典禮。</div>';
+  updateLockUI();
 }
 $('#cdForm').addEventListener('submit', e => {
   e.preventDefault();
+  if (!canEditBoard()) return;
   state.countdowns.push({ id: uid(), name: $('#cdName').value.trim(), date: $('#cdDate').value });
   $('#cdName').value = ''; $('#cdDate').value = '';
   save(); renderCountdowns();
 });
 $('#cdList').addEventListener('click', e => {
-  const b = e.target.closest('.del'); if (!b) return;
+  const b = e.target.closest('.del'); if (!b || !canEditBoard()) return;
   if (!confirm('刪除這個倒數事件？')) return;
   state.countdowns = state.countdowns.filter(c => c.id !== b.dataset.id);
   save(); renderCountdowns();
@@ -368,6 +375,7 @@ function tick() {
   const d = new Date();
   const hh = pad(d.getHours()), mm = pad(d.getMinutes()), ss = pad(d.getSeconds());
   $('#bigClock').innerHTML = `${hh}:${mm}<span>${ss}</span>`;
+  updateLockUI();
   $('#wDate').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日　星期${WEEK[d.getDay()]}`;
   const cur = renderSchedule();
   const sub = cur ? (toMin(cur.start) <= d.getHours() * 60 + d.getMinutes() ? `現在：${cur.name}` : `下一個：${cur.name}（${cur.start}）`) : `星期${WEEK[d.getDay()]}`;
@@ -863,7 +871,34 @@ async function hashPw(pw) {
   }
   let h = 5381; for (const c of salted) h = ((h << 5) + h + c.charCodeAt(0)) >>> 0; return 'f' + h.toString(16);
 }
-const isAuthed = () => sessionStorage.getItem('jl-auth') === state.settings.pwHash && !!state.settings.pwHash;
+/* 教師解鎖：閒置超過 AUTH_IDLE 自動上鎖（只要老師在控制台或解鎖狀態下操作，就重新計時） */
+const AUTH_IDLE = 5 * 60 * 1000;
+let authAt = 0;
+const isAuthed = () => !!state.settings.pwHash && sessionStorage.getItem('jl-auth') === state.settings.pwHash && Date.now() - authAt < AUTH_IDLE;
+function setAuth() { sessionStorage.setItem('jl-auth', state.settings.pwHash); authAt = Date.now(); updateLockUI(); }
+function lockNow() { sessionStorage.removeItem('jl-auth'); authAt = 0; updateLockUI(); }
+function touchAuth() { if (isAuthed()) authAt = Date.now(); }
+let wasAuthed = false;
+function updateLockUI() {
+  const on = isAuthed();
+  if (wasAuthed && !on) {
+    sessionStorage.removeItem('jl-auth');
+    if ($('#ctBody') && !$('#modal').classList.contains('hidden')) closeModal();
+    toast('🔒 閒置 5 分鐘，已自動上鎖');
+  }
+  wasAuthed = on;
+  document.body.classList.toggle('unlocked', on);
+  const left = Math.max(0, Math.ceil((AUTH_IDLE - (Date.now() - authAt)) / 60000));
+  $('#consoleBtn').innerHTML = on ? `<span>🔓</span>已解鎖 ${left} 分` : '<span>🔒</span>教師控制台';
+  $('#annEdit').textContent = on ? '✎' : '🔒';
+  const free = state.settings.studentEdit || on;
+  $$('#contactForm input, #contactForm button, #cdForm input, #cdForm button').forEach(x => x.disabled = !free);
+  $$('.lock-hint').forEach(x => x.classList.toggle('hidden', free));
+  $$('#contactList .del, #cdList .del').forEach(x => x.classList.toggle('hidden', !free));
+}
+['click', 'keydown', 'input'].forEach(ev => document.addEventListener(ev, e => {
+  if (e.target.closest?.('#modal, #contactForm, #cdForm, #contactList, #cdList')) touchAuth();
+}, true));
 
 /* ---------------- 初次設定 ---------------- */
 function parseVacant(str) {
@@ -911,7 +946,7 @@ function openSetup() {
       school: $('#sSchool').value.trim(), className: $('#sClass').value.trim(), schoolYear: $('#sYear').value.trim(), semester: $('#sSem').value,
       maxSeat: max, vacant: parseVacant($('#sVac').value).filter(n => n <= max), pwHash: await hashPw(pw), setupDone: true
     });
-    sessionStorage.setItem('jl-auth', s.pwHash);
+    setAuth();
     save(); closeModal(); renderAll(); toast('✅ 設定完成！');
   };
 }
@@ -920,7 +955,9 @@ function openSetup() {
 $('#consoleBtn').onclick = () => teacherOpen();
 $('#announceBox').onclick = () => teacherOpen('basic', '#bAnn');
 function teacherOpen(tab, focusSel) {
-  const go = () => { openConsole(tab); if (focusSel) setTimeout(() => { const f = $(focusSel); if (f) { f.focus(); f.select?.(); } }, 80); };
+  const go = () => {
+    if (tab === 'unlock') { closeModal(); toast('🔓 已解鎖，可以編輯聯絡簿與倒數日（閒置 5 分鐘自動上鎖）', 3000); return; }
+    openConsole(tab); if (focusSel) setTimeout(() => { const f = $(focusSel); if (f) { f.focus(); f.select?.(); } }, 80); };
   if (!state.settings.setupDone) return openSetup();
   if (isAuthed()) return go();
   openModal(`<button class="close" data-close>✕</button>
@@ -932,7 +969,7 @@ function teacherOpen(tab, focusSel) {
   $('#loginForm').onsubmit = async e => {
     e.preventDefault();
     if (await hashPw($('#lPw').value) === state.settings.pwHash) {
-      sessionStorage.setItem('jl-auth', state.settings.pwHash); go();
+      setAuth(); go();
     } else { $('#lErr').textContent = '密碼錯誤'; $('#lPw').select(); }
   };
 }
@@ -955,6 +992,7 @@ function ctBasic(el) {
   el.innerHTML = `
     <div class="field"><span>📢 跑馬燈公告（可以輸入多則，一行一則，會在畫面左上角輪流捲動）</span>
       <textarea id="bAnn" placeholder="例如：明天穿運動服&#10;星期五校外教學，記得帶水壺">${esc(s.announcement)}</textarea></div>
+    <label class="chk" style="margin:-4px 0 14px;font-size:14px"><input type="checkbox" id="bStuEdit" ${s.studentEdit ? 'checked' : ''}> 允許不輸入密碼就新增／刪除聯絡簿、倒數日（不勾選比較安全，學生無法亂寫）</label>
     <div class="field"><span>學校名稱</span><input id="bSchool" value="${esc(s.school)}"></div>
     <div class="field"><span>班級名稱</span><input id="bClass" value="${esc(s.className)}"></div>
     ${termFields(s, 'b')}
@@ -981,7 +1019,7 @@ function ctBasic(el) {
     <div class="modal-actions"><button class="primary" id="bSave">儲存</button></div>`;
   $('#bSrc').onchange = e => { $('#bCwa').classList.toggle('hidden', e.target.value !== 'cwa'); $('#bOm').classList.toggle('hidden', e.target.value === 'cwa'); };
   $('#bSave').onclick = async () => {
-    Object.assign(s, { school: $('#bSchool').value.trim(), className: $('#bClass').value.trim(), schoolYear: $('#bYear').value.trim(), semester: $('#bSem').value, announcement: $('#bAnn').value.trim() });
+    Object.assign(s, { school: $('#bSchool').value.trim(), className: $('#bClass').value.trim(), schoolYear: $('#bYear').value.trim(), semester: $('#bSem').value, announcement: $('#bAnn').value.trim(), studentEdit: $('#bStuEdit').checked });
     s.loc = { ...L, name: $('#bLoc').value.trim(), lat: +$('#bLat').value || 22.6, lon: +$('#bLon').value || 120.96,
       source: $('#bSrc').value, cwaKey: $('#bKey').value.trim(), cwaDataset: $('#bDs').value.trim() || 'F-D0047-037', cwaTown: $('#bTown').value.trim() || '金峰鄉' };
     save(); renderAll(); toast('✅ 基本資料已儲存');
@@ -1138,7 +1176,7 @@ function ctData(el) {
         if (!d.settings || !d.students) throw new Error('格式不符');
         if (!confirm(`要用備份檔「${f.name}」取代目前全部資料嗎？`)) return;
         state = { ...defaults(), ...d, settings: { ...defaults().settings, ...d.settings } };
-        sessionStorage.setItem('jl-auth', state.settings.pwHash);
+        setAuth();
         save(); renderAll(); loadWeather(); toast('✅ 已匯入備份'); openConsole('data');
       } catch (err) { toast('❌ 這不是正確的備份檔'); }
     };
@@ -1148,7 +1186,7 @@ function ctData(el) {
     if (await hashPw($('#dOld').value) !== state.settings.pwHash) return toast('目前密碼不正確');
     if ($('#dNew').value.length < 4) return toast('新密碼至少 4 碼');
     state.settings.pwHash = await hashPw($('#dNew').value);
-    sessionStorage.setItem('jl-auth', state.settings.pwHash); save(); toast('✅ 密碼已變更');
+    setAuth(); save(); toast('✅ 密碼已變更');
     $('#dOld').value = $('#dNew').value = '';
   };
   $('#dNewYear').onclick = () => {
@@ -1165,7 +1203,7 @@ function ctData(el) {
     if (prompt('請輸入「確定重設」四個字') !== '確定重設') return;
     localStorage.removeItem(KEY); sessionStorage.removeItem('jl-auth'); location.reload();
   };
-  $('#dLogout').onclick = () => { sessionStorage.removeItem('jl-auth'); closeModal(); toast('已登出'); };
+  $('#dLogout').onclick = () => { lockNow(); closeModal(); toast('🔒 已上鎖'); };
 }
 function exportData(tag = '備份') {
   const blob = new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' });

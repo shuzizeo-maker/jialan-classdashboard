@@ -105,6 +105,7 @@
             <div class="label">CONTACT BOOK <span id="contactDate"></span> 聯絡簿</div>
             <ol id="contactList" class="contact-list"></ol>
             <div class="empty" id="contactEmpty">還沒有聯絡簿事項。<br>在下方輸入一項，按 Enter 加入，可以一項一項慢慢加。</div>
+            <button type="button" class="lock-hint">🔒 老師解鎖後才能新增，點此輸入密碼</button>
             <form id="contactForm" class="inline-form">
               <input id="contactInput" placeholder="輸入一項，按 Enter 加入" autocomplete="off">
               <button type="submit">＋</button>
@@ -113,6 +114,7 @@
           <div class="tab-body hidden" data-body="countdown">
             <div class="label">COUNTDOWN 倒數日</div>
             <ul id="cdList" class="cd-list"></ul>
+            <button type="button" class="lock-hint">🔒 老師解鎖後才能新增，點此輸入密碼</button>
             <form id="cdForm" class="inline-form cd-form">
               <input id="cdName" placeholder="事件，例如：校慶" autocomplete="off" required>
               <input id="cdDate" type="date" required>
