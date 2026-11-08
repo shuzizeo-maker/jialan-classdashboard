@@ -12,6 +12,9 @@
 - **教師控制台**（密碼保護）：基本資料、座號與名單（可從 Excel 貼上）、作息表、每日任務、加扣金幣、匯出／匯入備份、變更密碼、新學年重設
 
 ## 給同事
+👉 **網址：https://shuzizeo-maker.github.io/jialan-classdashboard/**
+👉 **使用說明：https://shuzizeo-maker.github.io/jialan-classdashboard/guide.html**
+
 不用安裝，打開網址即可使用。完整的安裝、桌面捷徑、備份與常見問題請看 **[使用說明 guide.html](guide.html)**（儀表板右下角「❓說明」也能開啟）。
 
 ## 維護者：更新網站
