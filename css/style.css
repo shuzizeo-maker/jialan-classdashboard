@@ -333,6 +333,37 @@ body.clean #app { display: none; }
 .edit-rows { display: flex; flex-direction: column; gap: 6px; max-height: 48vh; overflow: auto; margin-bottom: 10px; }
 .edit-rows .er { display: grid; grid-template-columns: 110px 110px 1fr 36px; gap: 6px; }
 .edit-rows .er.task { grid-template-columns: 1fr 36px; }
+#schRows .er, .er.er-head { grid-template-columns: 100px 100px 1fr 96px 36px; }
+.er.er-head { display: grid; gap: 6px; font-size: 12px; color: var(--muted); padding: 0 2px 4px; }
+.edit-rows .er select { background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 8px; padding: 6px; min-width: 0; }
+.edit-rows .er select option, .tt-edit option { background: #1b3a32; }
+
+/* 週課表 */
+.sched-head { display: flex; align-items: center; gap: 8px; }
+.week-btn { margin-left: auto; border: 1px solid var(--line); background: rgba(255,255,255,.08); border-radius: 99px; padding: 3px 10px; font-size: 12px; letter-spacing: 0; color: var(--text); }
+.week-btn:hover { background: var(--accent-2); }
+.sl-slot { color: var(--muted); font-size: 12px; }
+.sched-list li.now .sl-slot { color: #e8fff4; }
+.np-slot { font-size: 14px; color: var(--muted); font-weight: 500; }
+.week-table, .tt-edit { width: 100%; border-collapse: separate; border-spacing: 4px; }
+.week-table th, .week-table td { padding: 10px 6px; text-align: center; border-radius: 10px; }
+.week-table thead th { color: var(--muted); font-size: 15px; }
+.week-table thead th.today { color: var(--accent); font-weight: 900; }
+.week-table tbody th, .tt-edit tbody th { text-align: left; font-size: 15px; white-space: nowrap; }
+.week-table tbody th small, .tt-edit tbody th small { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+.week-table td { background: rgba(255,255,255,.07); font-size: 20px; font-weight: 700; }
+.week-table td.none { color: var(--muted); opacity: .4; font-weight: 400; }
+.week-table td.today { background: rgba(95,184,160,.28); }
+.week-table td.now { background: var(--accent-2); box-shadow: 0 0 0 2px #a6efc4, 0 0 18px rgba(143,214,148,.6); }
+.tt-wrap { overflow-x: auto; margin-bottom: 12px; }
+.tt-edit thead th { font-size: 13px; color: var(--muted); }
+.tt-edit td input { width: 100%; min-width: 70px; background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; text-align: center; }
+.tt-edit tbody th i { color: var(--gold); font-style: normal; }
+.tt-import { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; }
+.tt-import summary { cursor: pointer; font-weight: 700; }
+.tt-import textarea { width: 100%; min-height: 110px; background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 10px; padding: 10px; font-family: Consolas, monospace; font-size: 13px; }
+.tt-steps { padding-left: 20px; margin: 10px 0; }
+.ai-prompt { white-space: pre-wrap; background: rgba(0,0,0,.35); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; color: var(--muted); max-height: 160px; overflow: auto; }
 .edit-rows .er input { background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; min-width: 0; color-scheme: dark; }
 .edit-rows .er button { border: 0; background: rgba(255,138,122,.2); border-radius: 8px; }
 .pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 6px; margin: 10px 0; max-height: 36vh; overflow: auto; }

@@ -30,8 +30,21 @@ const DEFAULT_SCHEDULE = [
   ['13:30', '14:10', '第五節', '一二四五'],
   ['14:20', '15:00', '第六節', '一二四五'],
   ['15:10', '15:50', '第七節', '一二四五'],
-  ['15:50', '16:00', '打掃・放學', '一二四五']
-].map(([start, end, name, days]) => ({ start, end, name, days }));
+  ['15:50', '16:00', '打掃・放學', '一二四五'],
+  ['16:00', '16:40', '第八節', ''],
+  ['16:50', '17:30', '第九節', '']
+].map(([start, end, name, days]) => ({ start, end, name, days, slot: inferSlot(name) }));
+// 第幾節 ↔ 課表欄位 p1～p9
+const CN_NUM = '一二三四五六七八九';
+const SLOTS = Array.from({ length: 9 }, (_, i) => 'p' + (i + 1));
+const slotName = s => `第${CN_NUM[+s.slice(1) - 1]}節`;
+function inferSlot(name) {
+  const m = String(name || '').match(/第\s*([一二三四五六七八九\d])\s*節/);
+  if (!m) return '';
+  const n = /\d/.test(m[1]) ? +m[1] : '一二三四五六七八九'.indexOf(m[1]) + 1;
+  return n >= 1 && n <= 9 ? 'p' + n : '';
+}
+const SUBJECTS = ['國語', '數學', '英語', '社會', '自然', '健康', '體育', '音樂', '視覺藝術', '表演藝術', '綜合', '本土語', '族語', '閩南語', '資訊', '閱讀', '彈性', '生活', '學扶', '社團', '班會', '導師時間'];
 
 function defaults() {
   return {
@@ -50,6 +63,7 @@ function defaults() {
       loc: { name: '臺東縣 金峰鄉', lat: 22.60, lon: 120.96, source: 'openmeteo', cwaKey: '', cwaDataset: 'F-D0047-037', cwaTown: '金峰鄉' }
     },
     schedule: DEFAULT_SCHEDULE.map(r => ({ ...r })),
+    timetable: {}, // { 1: { p1: '國語', ... }, ... 5: {...} }，1=星期一
     contact: {},
     countdowns: [],
     taskDefs: [
@@ -70,6 +84,8 @@ function load() {
     const raw = localStorage.getItem(KEY);
     if (!raw) return defaults();
     const d = defaults(), s = JSON.parse(raw);
+    // 舊版作息表沒有「節次」欄位，依名稱推算
+    (s.schedule || []).forEach(r => { if (r.slot === undefined) r.slot = inferSlot(r.name); });
     // 舊版把「115學年度第一學期」整串放在學年度，拆成學年度＋學期
     const m = String(s.settings?.schoolYear || '').match(/(\d+)\s*學年度?\s*(?:第\s*([一二12])\s*學期)?/);
     if (m && s.settings) { s.settings.schoolYear = m[1]; if (m[2] && !s.settings.semester) s.settings.semester = { 1: '一', 2: '二' }[m[2]] || m[2]; }
@@ -185,10 +201,18 @@ function todayRate(key = dateKey()) {
 }
 
 /* ---------------- 作息表 ---------------- */
+const dayTT = wd => state.timetable?.[wd] || {};
+const hasTT = wd => Object.values(dayTT(wd)).some(v => String(v || '').trim());
+// 上課節次：該天課表有填 → 依課表（空格=沒課）；該天課表全空 → 依作息表的「星期」欄
 function todaySchedule(d = new Date()) {
-  const wd = WEEK[d.getDay()];
-  return state.schedule.filter(r => !r.days || r.days.includes(wd)).sort((a, b) => toMin(a.start) - toMin(b.start));
+  const wd = d.getDay(), wdc = WEEK[wd], tt = dayTT(wd), useTT = hasTT(wd);
+  return state.schedule
+    .filter(r => r.slot ? (useTT ? !!String(tt[r.slot] || '').trim() : (r.days || '').includes(wdc)) : (!r.days || r.days.includes(wdc)))
+    .map(r => ({ ...r, subject: r.slot ? String(tt[r.slot] || '').trim() : '' }))
+    .sort((a, b) => toMin(a.start) - toMin(b.start));
 }
+const periodLabel = r => r.subject ? `${r.name}・${r.subject}` : r.name;
+const periodHTML = r => r.subject ? `${esc(r.subject)} <small class="np-slot">${esc(r.name)}</small>` : esc(r.name);
 function renderSchedule() {
   const d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
   const list = todaySchedule(d);
@@ -206,22 +230,39 @@ function renderSchedule() {
     if (now >= e) cls = 'past';
     else if (now >= s) { cls = 'now'; cur = r; }
     else if (!next) next = r;
-    return `<li class="${cls}"><span>${r.start}–${r.end}</span><span>${esc(r.name)}</span></li>`;
+    return `<li class="${cls}"><span>${r.start}–${r.end}</span><span>${r.subject ? `<small class="sl-slot">${esc(r.name)}</small> <b>${esc(r.subject)}</b>` : esc(r.name)}</span></li>`;
   }).join('');
   if (cur) {
     const left = Math.max(0, toMin(cur.end) - now);
-    box.innerHTML = `<div class="np-sub">現在是</div><div class="np-name">${esc(cur.name)}</div>
-      <div class="np-sub">還有 ${Math.floor(left)} 分 ${pad(Math.floor((left % 1) * 60))} 秒${next ? `・下一個：${esc(next.name)}` : ''}</div>
+    box.innerHTML = `<div class="np-sub">現在是</div><div class="np-name">${periodHTML(cur)}</div>
+      <div class="np-sub">還有 ${Math.floor(left)} 分 ${pad(Math.floor((left % 1) * 60))} 秒${next ? `・下一個：${esc(periodLabel(next))}` : ''}</div>
       <div class="bar"><i style="width:${(now - toMin(cur.start)) / (toMin(cur.end) - toMin(cur.start)) * 100}%"></i></div>`;
   } else if (next) {
     const left = toMin(next.start) - now;
-    box.innerHTML = `<div class="np-sub">下課／休息中</div><div class="np-name">下一個：${esc(next.name)}</div>
+    box.innerHTML = `<div class="np-sub">下課／休息中</div><div class="np-name">下一個：${periodHTML(next)}</div>
       <div class="np-sub">${next.start} 開始，還有 ${Math.ceil(left)} 分鐘</div>`;
   } else {
     box.innerHTML = `<div class="np-name">今天的課程結束了 🎒</div><div class="np-sub">路上小心，明天見！</div>`;
   }
   return cur || next;
 }
+
+/* ---------------- 整週課表 ---------------- */
+function slotTime(slot) { const r = state.schedule.find(x => x.slot === slot); return r ? `${r.start}–${r.end}` : ''; }
+function weekTableHTML() {
+  const d = new Date(), today = d.getDay(), now = d.getHours() * 60 + d.getMinutes();
+  const curSlot = (state.schedule.find(r => r.slot && toMin(r.start) <= now && now < toMin(r.end)) || {}).slot;
+  const rows = SLOTS.filter(s => [1, 2, 3, 4, 5].some(w => String(dayTT(w)[s] || '').trim()));
+  if (!rows.length) return '<div class="empty">還沒有填寫週課表。請到「教師控制台 → 週課表」填寫，或從 Excel／照片匯入。</div>';
+  return `<table class="week-table"><thead><tr><th></th>${[1, 2, 3, 4, 5].map(w => `<th class="${w === today ? 'today' : ''}">星期${WEEK[w]}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(s => `<tr><th>${slotName(s)}<small>${slotTime(s)}</small></th>${[1, 2, 3, 4, 5].map(w => {
+      const v = String(dayTT(w)[s] || '').trim();
+      return `<td class="${w === today ? 'today' : ''} ${w === today && s === curSlot ? 'now' : ''} ${v ? '' : 'none'}">${esc(v) || '—'}</td>`;
+    }).join('')}</tr>`).join('')}</tbody></table>`;
+}
+$('#weekBtn').onclick = () => openModal(`<button class="close" data-close>✕</button>
+  <h2>📅 ${esc(state.settings.className)} 週課表</h2><p class="sub">${esc(termText())}　今天的欄位以綠色標示，正在上的課會發亮。</p>
+  ${weekTableHTML()}`, { wide: true });
 
 /* ---------------- 聯絡簿 ---------------- */
 function renderContact() {
@@ -378,7 +419,7 @@ function tick() {
   updateLockUI();
   $('#wDate').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日　星期${WEEK[d.getDay()]}`;
   const cur = renderSchedule();
-  const sub = cur ? (toMin(cur.start) <= d.getHours() * 60 + d.getMinutes() ? `現在：${cur.name}` : `下一個：${cur.name}（${cur.start}）`) : `星期${WEEK[d.getDay()]}`;
+  const sub = cur ? (toMin(cur.start) <= d.getHours() * 60 + d.getMinutes() ? `現在：${periodLabel(cur)}` : `下一個：${periodLabel(cur)}（${cur.start}）`) : `星期${WEEK[d.getDay()]}`;
   $('#clockSub').textContent = sub;
   if (document.body.classList.contains('clean')) {
     $('#cleanClock').innerHTML = `<div class="cc-time">${hh}:${mm}</div><div class="cc-sub">${esc(state.settings.className)}・${esc(sub)}</div><div class="cc-hint">點一下畫面回到儀表板</div>`;
@@ -977,13 +1018,13 @@ function teacherOpen(tab, focusSel) {
 let consoleTab = 'basic';
 function openConsole(tab) {
   if (tab) consoleTab = tab;
-  const tabs = [['basic', '基本資料'], ['seats', '座號與名單'], ['schedule', '作息表'], ['tasks', '每日任務'], ['points', '加扣金幣'], ['data', '資料管理']];
+  const tabs = [['basic', '基本資料'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['tasks', '每日任務'], ['points', '加扣金幣'], ['data', '資料管理']];
   openModal(`<button class="close" data-close>✕</button>
     <h2>🛠️ 教師控制台</h2><p class="sub">TEACHER CONSOLE・修改後按「儲存」立即生效</p>
     <div class="console-tabs">${tabs.map(([k, v]) => `<button data-ct="${k}" class="${k === consoleTab ? 'active' : ''}">${v}</button>`).join('')}</div>
     <div id="ctBody"></div>`, { wide: true });
   $$('[data-ct]').forEach(b => b.onclick = () => openConsole(b.dataset.ct));
-  ({ basic: ctBasic, seats: ctSeats, schedule: ctSchedule, tasks: ctTasks, points: ctPoints, data: ctData })[consoleTab]($('#ctBody'));
+  ({ basic: ctBasic, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, tasks: ctTasks, points: ctPoints, data: ctData })[consoleTab]($('#ctBody'));
 }
 
 function ctBasic(el) {
@@ -1070,22 +1111,114 @@ function ctSchedule(el) {
     $('#schRows').innerHTML = rows.map((r, i) => `<div class="er" data-i="${i}">
       <input type="time" value="${r.start}" data-k="start"><input type="time" value="${r.end}" data-k="end">
       <div style="display:flex;gap:6px"><input value="${esc(r.name)}" data-k="name" placeholder="名稱" style="flex:1;min-width:0"><input value="${esc(r.days)}" data-k="days" title="星期幾有這節（一二三四五）" style="width:96px"></div>
+      <select data-k="slot" title="對應週課表的第幾節">${['', ...SLOTS].map(s => `<option value="${s}" ${s === (r.slot || '') ? 'selected' : ''}>${s ? slotName(s) : '非上課'}</option>`).join('')}</select>
       <button data-del="${i}" title="刪除">✕</button></div>`).join('');
   };
-  el.innerHTML = `<p class="sub">每列：開始、結束、名稱、星期（填「一二三四五」表示週一到週五都有；例如週三下午沒課就填「一二四五」）。</p>
+  el.innerHTML = `<p class="sub">設定每一節的<b>時間</b>（全週共用）。最後一欄「節次」對應到週課表，科目請到「週課表」分頁填寫。<br>
+    「星期」欄：非上課時段（早自修、午休…）依此判斷哪幾天有；上課節次則以週課表為準（課表空白＝那天沒課）。</p>
+    <div class="er er-head"><span>開始</span><span>結束</span><span>名稱／星期</span><span>節次</span><span></span></div>
     <div class="edit-rows" id="schRows"></div>
     <div class="modal-actions" style="justify-content:space-between">
       <div style="display:flex;gap:8px"><button class="btn" id="schAdd">＋ 新增一列</button><button class="btn" id="schDef">恢復預設</button></div>
       <button class="primary" id="schSave">儲存</button></div>`;
   draw();
-  const sync = () => $$('#schRows .er').forEach(er => $$('input', er).forEach(inp => rows[er.dataset.i][inp.dataset.k] = inp.value));
+  const sync = () => $$('#schRows .er').forEach(er => $$('input, select', er).forEach(inp => rows[er.dataset.i][inp.dataset.k] = inp.value));
   $('#schRows').onclick = e => { const d = e.target.closest('[data-del]'); if (d) { sync(); rows.splice(+d.dataset.del, 1); draw(); } };
-  $('#schAdd').onclick = () => { sync(); rows.push({ start: '08:00', end: '08:40', name: '', days: '一二三四五' }); draw(); };
+  $('#schAdd').onclick = () => { sync(); rows.push({ start: '08:00', end: '08:40', name: '', days: '一二三四五', slot: '' }); draw(); };
   $('#schDef').onclick = () => { rows = DEFAULT_SCHEDULE.map(r => ({ ...r })); draw(); };
   $('#schSave').onclick = () => {
     sync();
     state.schedule = rows.filter(r => r.start && r.end && r.name.trim()).sort((a, b) => toMin(a.start) - toMin(b.start));
     save(); renderSchedule(); toast('✅ 作息表已儲存'); draw();
+  };
+}
+
+const AI_PROMPT = `請幫我把這張「國小班級課表」照片轉成 CSV 文字，規則如下：
+1. 只輸出 CSV 內容，放在一個程式碼區塊裡，不要任何說明。
+2. 第一行固定是：節次,一,二,三,四,五
+3. 之後每一行是一節課，依序從第1節到第9節，格式：第1節,星期一科目,星期二科目,星期三科目,星期四科目,星期五科目
+4. 沒有課的格子留空，但逗號要保留（例如：第5節,國語,數學,,英語,體育）。
+5. 不要包含早自修、午餐、午休、打掃、放學等非上課時段。
+6. 科目名稱照課表上的文字，不要加老師姓名或教室。
+7. 看不清楚的字寫成「?」。`;
+
+// 解析從 Excel／校務系統／AI 貼上的課表文字，回傳 { p1: [一,二,三,四,五], ... }
+function parseTimetable(text) {
+  const out = {}; let seq = 0;
+  const lines = String(text).split(/\r?\n/).map(l => l.trim())
+    .filter(l => l && !/^```/.test(l) && !/^[\s|:：\-–—]+$/.test(l));
+  for (const line of lines) {
+    let cells = line.includes('\t') ? line.split('\t')
+      : line.includes('|') ? line.replace(/^\||\|$/g, '').split('|')
+      : /[,，]/.test(line) ? line.split(/[,，]/)
+      : line.split(/\s+/);
+    cells = cells.map(c => c.trim().replace(/^["']|["']$/g, ''));
+    const dayHead = cells.filter(c => /^(星期|週|周|禮拜)?[一二三四五]$|^(mon|tue|wed|thu|fri)/i.test(c)).length;
+    if (dayHead >= 3) continue; // 標題列
+    const first = cells[0] || '';
+    if (/早自修|早修|晨光|午餐|午休|打掃|放學|升旗|導師時間|下課/.test(first)) continue;
+    let slot = inferSlot(first) || (/^[1-9]$/.test(first) ? 'p' + first : '');
+    let subj = (slot || /節|^\d{1,2}[:：]\d{2}/.test(first) || cells.length >= 6) ? cells.slice(1) : cells;
+    if (/^\d{1,2}[:：]\d{2}/.test(subj[0] || '')) subj = subj.slice(1); // 第二欄是時間就略過
+    if (!slot) slot = 'p' + (seq + 1);
+    seq = +slot.slice(1);
+    if (seq > 9) continue;
+    out[slot] = Array.from({ length: 5 }, (_, i) => (subj[i] || '').replace(/[?？]/g, '').trim());
+  }
+  return out;
+}
+
+function ctTimetable(el) {
+  const tt = state.timetable || {};
+  el.innerHTML = `
+    <p class="sub">在格子裡輸入科目（可從下拉選單挑選），空白代表那節沒課。首頁會依今天星期幾自動顯示科目。<br>每一節的時間請在「作息時間」分頁設定。</p>
+    <div class="tt-wrap"><table class="tt-edit">
+      <thead><tr><th>節次</th>${[1, 2, 3, 4, 5].map(w => `<th>星期${WEEK[w]}</th>`).join('')}</tr></thead>
+      <tbody>${SLOTS.map(s => `<tr><th>${slotName(s)}<small>${slotTime(s) || '<i>未設定時間</i>'}</small></th>${[1, 2, 3, 4, 5].map(w =>
+        `<td><input list="subjList" data-w="${w}" data-s="${s}" value="${esc((tt[w] || {})[s] || '')}"></td>`).join('')}</tr>`).join('')}</tbody>
+    </table></div>
+    <datalist id="subjList">${SUBJECTS.map(x => `<option value="${x}">`).join('')}</datalist>
+
+    <details class="tt-import"><summary>📋 從 Excel 或校務系統貼上整張課表</summary>
+      <p class="sub">在 Excel（或校務系統網頁）選取課表範圍 → 複製 → 貼到下面 → 按「填入格子」。<br>建議包含左邊的節次欄（第1節、第2節…），標題列與早自修、午休等列會自動略過。</p>
+      <textarea id="ttPaste" placeholder="節次	一	二	三	四	五&#10;第1節	國語	數學	國語	英語	數學&#10;第2節	…"></textarea>
+      <div class="modal-actions" style="justify-content:flex-start"><button class="btn" id="ttApply">⬇️ 填入格子</button><span class="sub" id="ttMsg" style="margin:0;align-self:center"></span></div>
+    </details>
+
+    <details class="tt-import"><summary>📷 用課表照片產生（借助免費 AI）</summary>
+      <ol class="sub tt-steps">
+        <li>按下方「複製 AI 指令」。</li>
+        <li>打開 Claude（claude.ai）、ChatGPT 或 Gemini，<b>上傳課表照片或截圖</b>，再貼上剛剛複製的指令送出。</li>
+        <li>複製 AI 回覆的 CSV 文字，貼到上面「從 Excel 貼上」的框框，按「填入格子」。</li>
+        <li><b>一定要核對</b>格子內容，AI 偶爾會看錯字，確認後再按「儲存」。</li>
+      </ol>
+      <pre class="ai-prompt" id="aiPrompt">${esc(AI_PROMPT)}</pre>
+      <button class="btn" id="ttCopy">📋 複製 AI 指令</button>
+    </details>
+
+    <div class="modal-actions" style="justify-content:space-between">
+      <button class="btn danger" id="ttClear">清空課表</button>
+      <button class="primary" id="ttSave">儲存</button>
+    </div>`;
+  $('#ttApply').onclick = () => {
+    const res = parseTimetable($('#ttPaste').value), keys = Object.keys(res);
+    if (!keys.length) return $('#ttMsg').textContent = '⚠️ 看不懂貼上的內容，請確認有包含課表格子';
+    keys.forEach(s => res[s].forEach((v, i) => { const inp = $(`.tt-edit input[data-w="${i + 1}"][data-s="${s}"]`); if (inp) inp.value = v; }));
+    $('#ttMsg').textContent = `✅ 已填入 ${keys.length} 節（${keys.map(slotName).join('、')}），請核對後按「儲存」`;
+    $('.tt-wrap').scrollIntoView({ behavior: 'smooth' });
+  };
+  $('#ttCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(AI_PROMPT); toast('✅ 已複製 AI 指令'); }
+    catch (e) { const r = document.createRange(); r.selectNodeContents($('#aiPrompt')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('請按 Ctrl+C 複製已選取的文字'); }
+  };
+  $('#ttClear').onclick = () => { if (confirm('清空所有格子？（按「儲存」後才會生效）')) $$('.tt-edit input').forEach(i => i.value = ''); };
+  $('#ttSave').onclick = () => {
+    const t = {};
+    $$('.tt-edit input').forEach(i => { const v = i.value.trim(); if (v) (t[i.dataset.w] ||= {})[i.dataset.s] = v; });
+    state.timetable = t;
+    const noTime = SLOTS.filter(s => Object.values(t).some(d => d[s]) && !slotTime(s));
+    save(); renderSchedule(); tick();
+    toast(noTime.length ? `⚠️ 已儲存，但 ${noTime.map(slotName).join('、')} 還沒設定時間，請到「作息時間」補上` : '✅ 週課表已儲存', 3500);
   };
 }
 
