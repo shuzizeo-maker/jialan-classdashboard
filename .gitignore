@@ -1,0 +1,20 @@
+# 機密與個人設定
+.env
+.env.*
+*.key
+secrets*
+# 班級備份檔（可能含學生姓名、氣象署授權碼）
+*備份*.json
+班級儀表板_*.json
+# 工具與暫存
+.claude/
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.tmp
+*.log
+# 系統檔
+Thumbs.db
+desktop.ini
+.DS_Store

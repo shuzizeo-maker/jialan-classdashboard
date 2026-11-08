@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>班級儀表板使用說明</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap">
+<style>
+  :root { --bg: #f4f7f2; --card: #fff; --text: #1f2d27; --muted: #5d6f66; --accent: #2f8a6e; --accent-soft: #e3f2ea; --warn: #fff4dc; --warn-line: #e8b44c; --danger: #fde8e4; --danger-line: #d9634f; --line: #dfe7e1; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #122019; --card: #1a2b23; --text: #e8f1ec; --muted: #9db3a7; --accent: #6fc7a5; --accent-soft: #20392e; --warn: #3a3220; --warn-line: #c99a3a; --danger: #3d2420; --danger-line: #d9634f; --line: #2c4237; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Noto Sans TC", "Microsoft JhengHei", sans-serif; background: var(--bg); color: var(--text); line-height: 1.8; font-size: 17px; }
+  header { background: linear-gradient(160deg, #2b5876, #2f5c46); color: #fff; padding: 40px 16px 34px; text-align: center; }
+  header h1 { margin: 0; font-size: clamp(26px, 5vw, 38px); }
+  header p { margin: 8px 0 0; opacity: .9; }
+  header a.open { display: inline-block; margin-top: 18px; background: #fff; color: #2f5c46; font-weight: 900; padding: 12px 26px; border-radius: 999px; text-decoration: none; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
+  nav.toc { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 20px; margin-bottom: 24px; }
+  nav.toc ol { margin: 0; padding-left: 22px; columns: 2; }
+  @media (max-width: 600px) { nav.toc ol { columns: 1; } }
+  nav.toc a { color: var(--accent); text-decoration: none; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 6px 22px 16px; margin-bottom: 18px; }
+  h2 { font-size: 23px; border-left: 6px solid var(--accent); padding-left: 10px; margin: 18px 0 10px; }
+  h3 { font-size: 18px; margin: 16px 0 4px; }
+  ol.steps { counter-reset: s; list-style: none; padding: 0; }
+  ol.steps > li { counter-increment: s; position: relative; padding: 4px 0 10px 46px; }
+  ol.steps > li::before { content: counter(s); position: absolute; left: 0; top: 4px; width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 900; display: grid; place-items: center; }
+  kbd { background: var(--accent-soft); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 0 7px; font-family: inherit; font-size: .92em; }
+  .btnname { background: var(--accent-soft); color: var(--accent); padding: 1px 8px; border-radius: 6px; font-weight: 700; white-space: nowrap; }
+  .note { background: var(--accent-soft); border-radius: 12px; padding: 10px 14px; margin: 12px 0; }
+  .warn { background: var(--warn); border-left: 5px solid var(--warn-line); border-radius: 10px; padding: 10px 14px; margin: 12px 0; }
+  .danger { background: var(--danger); border-left: 5px solid var(--danger-line); border-radius: 10px; padding: 10px 14px; margin: 12px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 700; }
+  .url { word-break: break-all; font-weight: 700; color: var(--accent); }
+  details { border-bottom: 1px solid var(--line); padding: 8px 0; }
+  summary { cursor: pointer; font-weight: 700; }
+  footer { text-align: center; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌄 班級儀表板 使用說明</h1>
+  <p>臺東縣金峰鄉嘉蘭國小・給老師們的安裝與操作指南</p>
+  <a class="open" href="./">開啟班級儀表板 →</a>
+</header>
+
+<main>
+  <nav class="toc">
+    <ol>
+      <li><a href="#what">先看這裡：不用安裝</a></li>
+      <li><a href="#first">第一次使用（5 分鐘）</a></li>
+      <li><a href="#desktop">放到桌面，一鍵開啟</a></li>
+      <li><a href="#daily">每天上課怎麼用</a></li>
+      <li><a href="#teacher">教師控制台</a></li>
+      <li><a href="#weather">天氣設定（選用）</a></li>
+      <li><a href="#data">⚠️ 資料保存與備份</a></li>
+      <li><a href="#year">換學年／換班級</a></li>
+      <li><a href="#offline">沒有網路時（離線版）</a></li>
+      <li><a href="#faq">常見問題</a></li>
+    </ol>
+  </nav>
+
+  <section id="what">
+    <h2>1. 先看這裡：不用安裝任何程式</h2>
+    <p>班級儀表板是一個<b>網頁</b>，只要用瀏覽器打開網址就能用，不需要安裝軟體，也不需要管理員權限。</p>
+    <p>網址：<span class="url" id="siteUrl">（本頁的上一層網址）</span></p>
+    <table>
+      <tr><th>需要</th><th>說明</th></tr>
+      <tr><td>瀏覽器</td><td><b>Microsoft Edge</b> 或 <b>Google Chrome</b>（教學桌機內建的 Edge 就可以）</td></tr>
+      <tr><td>網路</td><td>第一次開啟與顯示天氣需要網路；其他功能斷網也能繼續用</td></tr>
+      <tr><td>麥克風（選用）</td><td>只有「音量偵測」功能需要</td></tr>
+      <tr><td>喇叭（選用）</td><td>計時器鈴聲、環境音</td></tr>
+    </table>
+    <div class="note">💡 每位老師的資料是分開的：資料存在「那一台電腦的那個瀏覽器」裡，不會傳到網路上，也不會和其他老師混在一起。</div>
+  </section>
+
+  <section id="first">
+    <h2>2. 第一次使用（約 5 分鐘）</h2>
+    <ol class="steps">
+      <li>在<b>教室要投影的那台電腦</b>打開 Edge 或 Chrome，輸入上面的網址（或點本頁上方的「開啟班級儀表板」）。</li>
+      <li>畫面會出現「歡迎使用班級儀表板」設定視窗，依序確認：
+        <ul>
+          <li><b>學校名稱</b>（已預填，可修改）</li>
+          <li><b>班級名稱</b>：改成您的班級，例如「三年甲班」</li>
+          <li><b>學年度</b>（只填數字，例如 115）與<b>學期</b></li>
+          <li><b>最大座號</b>：點選人數按鈕或直接輸入</li>
+          <li><b>空號</b>：有轉出的座號才填，例如 <kbd>7、15</kbd>，沒有就空白</li>
+        </ul>
+      </li>
+      <li>設定<b>教師密碼</b>（至少 4 碼，輸入兩次）。這個密碼用來進入「教師控制台」，請記下來。</li>
+      <li>按 <span class="btnname">開始使用</span>，完成！</li>
+      <li>建議接著進入 <span class="btnname">🔒 教師控制台</span> → <span class="btnname">座號與名單</span> 輸入學生姓名（可從 Excel 整欄複製貼上；不想顯示姓名也可以空白，只用座號）。</li>
+    </ol>
+  </section>
+
+  <section id="desktop">
+    <h2>3. 放到桌面，以後一鍵開啟</h2>
+    <h3>方法 A：Edge 安裝成「應用程式」（推薦）</h3>
+    <ol class="steps">
+      <li>用 Edge 開啟班級儀表板。</li>
+      <li>點右上角 <kbd>⋯</kbd> → <span class="btnname">應用程式</span> → <span class="btnname">將此網站安裝為應用程式</span>。</li>
+      <li>名稱可改成「班級儀表板」，按 <span class="btnname">安裝</span>。</li>
+      <li>之後桌面與開始功能表會出現圖示，點兩下就會以獨立視窗開啟，沒有網址列，畫面更大。</li>
+    </ol>
+    <h3>方法 B：Chrome 建立捷徑</h3>
+    <ol class="steps">
+      <li>用 Chrome 開啟班級儀表板。</li>
+      <li>點右上角 <kbd>⋮</kbd> → <span class="btnname">投放、儲存及分享</span> → <span class="btnname">建立捷徑…</span>。</li>
+      <li>勾選 <span class="btnname">以視窗開啟</span>，按 <span class="btnname">建立</span>。</li>
+    </ol>
+    <h3>方法 C：最簡單</h3>
+    <p>把瀏覽器網址列左邊的 🔒 圖示直接<b>拖曳到桌面</b>，就會產生一個捷徑。</p>
+    <div class="note">💡 想要開機就自動出現？Edge：設定 → <b>開始、首頁和新索引標籤</b> → 「Microsoft Edge 啟動時」選「開啟這些頁面」→ 新增儀表板網址。</div>
+  </section>
+
+  <section id="daily">
+    <h2>4. 每天上課怎麼用</h2>
+    <table>
+      <tr><th>想做的事</th><th>操作</th></tr>
+      <tr><td>投影全螢幕</td><td>右下角 <span class="btnname">⛶ 全螢幕</span>，或按鍵盤 <kbd>F11</kbd>；離開按 <kbd>Esc</kbd></td></tr>
+      <tr><td>只顯示大時鐘</td><td>右下角 <span class="btnname">👁️ 簡潔</span>，點一下畫面回來</td></tr>
+      <tr><td>寫聯絡簿</td><td>首頁左欄 <span class="btnname">聯絡簿</span>，輸入一項按 <kbd>Enter</kbd>，可以一項一項加</td></tr>
+      <tr><td>公告跑馬燈</td><td>點左上角公告列（需教師密碼），一行一則</td></tr>
+      <tr><td>倒數計時／番茄鐘</td><td>首頁中間的分頁，時間到會響鈴</td></tr>
+      <tr><td>抽號</td><td>中間 <span class="btnname">抽號</span>，可勾「不重複」</td></tr>
+      <tr><td>教室太吵</td><td>中間 <span class="btnname">音量</span> → 開始偵測（瀏覽器詢問時按「允許」麥克風）</td></tr>
+      <tr><td>放背景音</td><td>右下環境音：溪流、微風、細雨、鳥鳴、蟲鳴</td></tr>
+      <tr><td>學生打卡</td><td>底部 <span class="btnname">任務打卡</span>，選任務後學生點自己的座號；點錯再點一次取消</td></tr>
+    </table>
+    <h3>🌿 金幣與山林圖鑑（班級經營）</h3>
+    <ul>
+      <li>每完成一項任務 +1 金幣；老師也可以在控制台加減金幣。</li>
+      <li>每位學生每累積 <b>10 金幣</b>，就會在山林裡「發現」一種新物種（鳥類、動物、昆蟲、植物共 40 種，以嘉蘭在地物種為主）。</li>
+      <li>全班金幣累積 <b>100</b>，「班級山林」升一級，背景會長出更多樹，大家發現的物種也會出現在背景裡。</li>
+    </ul>
+  </section>
+
+  <section id="teacher">
+    <h2>5. 教師控制台</h2>
+    <p>點底部 <span class="btnname">🔒 教師控制台</span>，輸入密碼。同一次開啟期間不用重複輸入；離開座位前可到「資料管理」按 <span class="btnname">登出教師模式</span>。</p>
+    <table>
+      <tr><th>分頁</th><th>可以做什麼</th></tr>
+      <tr><td>基本資料</td><td>公告、校名、班級名稱、學年度、學期、天氣來源</td></tr>
+      <tr><td>座號與名單</td><td>最大座號、空號、學生姓名</td></tr>
+      <tr><td>作息表</td><td>每一節的時間與名稱；「星期」欄填 <kbd>一二四五</kbd> 代表週三沒有這節</td></tr>
+      <tr><td>每日任務</td><td>每天要打卡的項目，例如繳交作業、打掃完成</td></tr>
+      <tr><td>加扣金幣</td><td>選座號（可多選、全選）→ 按 +1、+5、−1 等，可填原因，有紀錄可查</td></tr>
+      <tr><td>資料管理</td><td>匯出／匯入備份、變更密碼、開始新學年、完全重設</td></tr>
+    </table>
+  </section>
+
+  <section id="weather">
+    <h2>6. 天氣設定（選用）</h2>
+    <p>預設使用免費的 Open-Meteo 天氣資料，<b>不用設定就能顯示金峰鄉天氣</b>。</p>
+    <p>若想改用<b>中央氣象署</b>的鄉鎮預報：</p>
+    <ol class="steps">
+      <li>到 <b>opendata.cwa.gov.tw</b> 免費註冊會員並登入。</li>
+      <li>點「取得授權碼」，複製那串 <kbd>CWA-</kbd> 開頭的文字。</li>
+      <li>儀表板 → 教師控制台 → 基本資料 → 天氣「資料來源」選 <span class="btnname">中央氣象署開放資料</span>，貼上授權碼。</li>
+      <li>其他鄉鎮的學校：把「鄉鎮名稱」改成自己的鄉鎮；不是臺東縣的話，「資料集」也要換成該縣市的鄉鎮預報代碼。</li>
+      <li>按 <span class="btnname">儲存</span>。天氣卡最下面顯示「資料來源：中央氣象署」就成功了。</li>
+    </ol>
+    <div class="warn">授權碼是您個人的，請不要分享給別人；每位老師可以各自申請。</div>
+  </section>
+
+  <section id="data">
+    <h2>7. ⚠️ 資料保存與備份（很重要）</h2>
+    <p>所有資料（名單、金幣、圖鑑、聯絡簿…）都存在<b>這台電腦的這個瀏覽器</b>裡。以下情況資料會<b>消失或看不到</b>：</p>
+    <div class="danger">
+      <b>❌ 電腦有「還原卡」或「還原系統」</b>（重開機就回到原狀）：每次關機資料都會被清掉！請洽資訊組將瀏覽器資料排除還原，或每天下課前匯出備份。<br>
+      <b>❌ 清除瀏覽紀錄時勾了「Cookie 和其他網站資料」</b><br>
+      <b>❌ 使用 InPrivate／無痕視窗</b>（關閉視窗就消失）<br>
+      <b>❌ 換一台電腦或換另一個瀏覽器</b>（資料不會跟過去，需要用備份檔匯入）
+    </div>
+    <h3>怎麼備份</h3>
+    <ol class="steps">
+      <li>教師控制台 → <span class="btnname">資料管理</span> → <span class="btnname">⬇️ 匯出備份檔</span>。</li>
+      <li>會下載一個 <kbd>班級儀表板_班級_備份_日期.json</kbd> 檔案，存到隨身碟或雲端硬碟。</li>
+      <li>建議<b>每週備份一次</b>，期末與換學年前一定要備份。</li>
+    </ol>
+    <h3>怎麼還原／搬到新電腦</h3>
+    <ol class="steps">
+      <li>在新電腦打開儀表板網址，先隨便完成第一次設定（密碼之後會被備份檔裡的密碼取代）。</li>
+      <li>教師控制台 → 資料管理 → <span class="btnname">⬆️ 匯入備份檔</span> → 選擇 json 檔 → 確定。</li>
+    </ol>
+    <div class="warn"><b>同一台電腦有多位老師使用？</b>同一個瀏覽器只能存一個班級。請每位老師各用一個瀏覽器「設定檔」（Edge 右上角頭像 → 新增設定檔），或一位用 Edge、一位用 Chrome。</div>
+  </section>
+
+  <section id="year">
+    <h2>8. 換學年／換班級</h2>
+    <ol class="steps">
+      <li>教師控制台 → 資料管理 → <span class="btnname">開始新學年</span>。</li>
+      <li>系統會<b>先自動下載一份備份</b>，再清空學生金幣、圖鑑、打卡紀錄、聯絡簿與名單。</li>
+      <li>保留：學校名稱、作息表、每日任務、倒數日、密碼。</li>
+      <li>接著到「基本資料」改新的班級名稱、學年度、學期，到「座號與名單」改人數與姓名。</li>
+    </ol>
+  </section>
+
+  <section id="offline">
+    <h2>9. 沒有網路時（離線版）</h2>
+    <p>如果教室網路不穩，也可以把整個儀表板下載到電腦裡：</p>
+    <ol class="steps">
+      <li>到專案的 GitHub 頁面，點綠色 <span class="btnname">Code</span> → <span class="btnname">Download ZIP</span>。</li>
+      <li>在下載的 ZIP 上按右鍵 → <span class="btnname">解壓縮全部</span>，放到「文件」或桌面。</li>
+      <li>打開資料夾，在 <kbd>index.html</kbd> 上按右鍵 → 開啟方式 → Edge 或 Chrome。</li>
+      <li>可在 index.html 上按右鍵 → 傳送到 → 桌面（建立捷徑）。</li>
+    </ol>
+    <div class="note">離線版沒有網路時不會顯示天氣，其他功能都可以用。注意：離線版和網址版的資料是<b>分開</b>的，要搬資料請用「匯出／匯入備份」。</div>
+  </section>
+
+  <section id="faq">
+    <h2>10. 常見問題</h2>
+    <details><summary>忘記教師密碼怎麼辦？</summary>
+      <p>密碼只存在這台電腦，無法查詢。若有備份檔，可清除這個網站的資料後重新設定，再匯入備份（備份檔中的密碼會一起還原，請先確認記得備份當時的密碼）。若都沒有，只能重新開始。</p></details>
+    <details><summary>按了計時器卻沒有聲音？</summary>
+      <p>請確認電腦喇叭沒有靜音。瀏覽器規定要先在頁面上點一下才能播放聲音，按「開始」就算點過了。</p></details>
+    <details><summary>音量偵測沒有反應？</summary>
+      <p>網址列左側的圖示 → 網站權限 → 麥克風設為「允許」，再重新整理頁面。</p></details>
+    <details><summary>天氣一直顯示「無法取得」？</summary>
+      <p>通常是網路暫時中斷，系統會每 5 分鐘自動重試，並保留最後一次成功的資料。若使用氣象署，請確認授權碼正確。</p></details>
+    <details><summary>畫面太小或太擠？</summary>
+      <p>按 <kbd>F11</kbd> 全螢幕；或按 <kbd>Ctrl</kbd> + <kbd>-</kbd>／<kbd>+</kbd> 縮放，<kbd>Ctrl</kbd> + <kbd>0</kbd> 恢復。</p></details>
+    <details><summary>我是別的學校，可以用嗎？</summary>
+      <p>可以！第一次設定時把學校名稱改掉即可；天氣地點在教師控制台 → 基本資料修改（Open-Meteo 填學校的緯度、經度）。</p></details>
+    <details><summary>學生的資料安全嗎？</summary>
+      <p>資料不會上傳到任何伺服器，只存在本機瀏覽器。教師密碼是為了防止學生誤改，並非高強度保護，建議不要輸入身分證字號、電話等敏感個資，姓名也可以只填暱稱或不填。</p></details>
+  </section>
+  <footer>臺東縣金峰鄉嘉蘭國小・班級儀表板</footer>
+</main>
+<script>
+  document.getElementById('siteUrl').textContent = new URL('./', location.href).href;
+</script>
+</body>
+</html>

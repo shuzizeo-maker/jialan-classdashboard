@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>班級儀表板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ===== 山林背景 ===== -->
+<div id="scene" aria-hidden="true">
+  <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+    <defs>
+      <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop id="sky0" offset="0%" stop-color="#2b5876"/>
+        <stop id="sky1" offset="60%" stop-color="#7fb7c9"/>
+        <stop id="sky2" offset="100%" stop-color="#d9e8d0"/>
+      </linearGradient>
+      <radialGradient id="sunGlow">
+        <stop offset="0%" stop-color="#fff6d5" stop-opacity="1"/>
+        <stop offset="40%" stop-color="#ffe9a8" stop-opacity=".6"/>
+        <stop offset="100%" stop-color="#ffe9a8" stop-opacity="0"/>
+      </radialGradient>
+      <linearGradient id="riverGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#9fd3df" stop-opacity=".2"/>
+        <stop offset="50%" stop-color="#c8ecf2" stop-opacity=".75"/>
+        <stop offset="100%" stop-color="#9fd3df" stop-opacity=".3"/>
+      </linearGradient>
+    </defs>
+    <rect width="1600" height="900" fill="url(#skyGrad)"/>
+    <g id="stars"></g>
+    <g id="sunGroup">
+      <circle id="sunHalo" cx="1200" cy="200" r="160" fill="url(#sunGlow)"/>
+      <circle id="sunDisc" cx="1200" cy="200" r="46" fill="#fff3c4"/>
+    </g>
+    <g id="clouds">
+      <g class="cloud c1"><ellipse cx="200" cy="150" rx="110" ry="26"/><ellipse cx="250" cy="132" rx="70" ry="28"/></g>
+      <g class="cloud c2"><ellipse cx="900" cy="110" rx="140" ry="24"/><ellipse cx="860" cy="94" rx="70" ry="24"/></g>
+      <g class="cloud c3"><ellipse cx="1400" cy="230" rx="100" ry="20"/><ellipse cx="1440" cy="216" rx="60" ry="20"/></g>
+    </g>
+    <!-- 遠山 -->
+    <polygon class="m m1" points="0,470 120,390 230,430 360,330 470,400 560,350 690,420 820,300 930,380 1050,330 1180,410 1300,320 1420,390 1520,350 1600,400 1600,900 0,900"/>
+    <polygon class="m m1s" points="360,330 420,470 470,400"/>
+    <polygon class="m m1s" points="820,300 860,470 930,380"/>
+    <!-- 中山（北大武山意象） -->
+    <polygon class="m m2" points="0,560 140,470 260,520 400,430 520,500 640,410 760,480 880,440 1000,520 1120,450 1260,520 1380,470 1500,530 1600,490 1600,900 0,900"/>
+    <polygon class="m m2s" points="400,430 460,560 520,500"/>
+    <polygon class="m m2s" points="640,410 700,560 760,480"/>
+    <polygon class="m m2s" points="1120,450 1180,580 1260,520"/>
+    <!-- 近山 -->
+    <polygon class="m m3" points="0,650 160,580 300,630 460,560 620,640 780,590 940,650 1100,580 1260,640 1420,590 1600,640 1600,900 0,900"/>
+    <polygon class="m m3s" points="460,560 520,680 620,640"/>
+    <polygon class="m m3s" points="1100,580 1150,690 1260,640"/>
+    <!-- 太麻里溪 -->
+    <path class="river" d="M-20,760 C220,720 380,790 620,750 C860,710 1000,790 1240,760 C1400,740 1520,770 1620,750 L1620,780 C1500,800 1400,770 1240,790 C1000,820 860,740 620,780 C380,820 220,750 -20,790 Z" fill="url(#riverGrad)"/>
+    <!-- 前景草坡 -->
+    <polygon class="m m4" points="0,800 200,760 420,800 640,770 860,810 1080,770 1300,805 1600,770 1600,900 0,900"/>
+    <g id="trees"></g>
+  </svg>
+  <div id="critters"></div>
+</div>
+
+<!-- ===== 主介面 ===== -->
+<div id="app">
+  <header class="topbar">
+    <div class="announce glass" id="announceBox" title="老師點這裡編輯公告">
+      <span class="tag">公告</span>
+      <div class="marquee"><span id="annText"></span></div>
+      <button class="ann-edit" id="annEdit" title="編輯公告">✎</button>
+    </div>
+    <div class="brand">
+      <div class="school" id="schoolName"></div>
+      <h1 id="className"></h1>
+    </div>
+    <div class="stats glass">
+      <div class="stat" title="全班累積金幣"><span class="ico coin">$</span><b id="statCoins">0</b><small>金幣</small></div>
+      <div class="stat" title="今日任務完成率"><span class="ico energy">⚡</span><b id="statEnergy">0%</b><small>今日能量</small></div>
+      <div class="stat" title="圖鑑發現數"><span class="ico">📖</span><b id="statDex">0/40</b><small>圖鑑</small></div>
+      <div class="forest-meter" title="班級山林成長值">
+        <div class="fm-head"><span>班級山林 <b id="forestLv">Lv.1</b></span><span id="forestPts">0/100</span></div>
+        <div class="bar"><i id="forestBar"></i></div>
+      </div>
+    </div>
+  </header>
+
+  <main id="pages">
+    <!-- 首頁 -->
+    <section class="page active" data-page="home">
+      <div class="home-grid">
+        <div class="panel glass left">
+          <div class="tabs" data-tabs="left">
+            <button class="active" data-tab="schedule">作息表</button>
+            <button data-tab="contact">聯絡簿</button>
+            <button data-tab="countdown">倒數日</button>
+          </div>
+          <div class="tab-body" data-body="schedule">
+            <div class="label">SCHEDULE <span id="schedDate"></span></div>
+            <div id="nowPeriod" class="now-period"></div>
+            <ul id="schedList" class="sched-list"></ul>
+          </div>
+          <div class="tab-body hidden" data-body="contact">
+            <div class="label">CONTACT BOOK <span id="contactDate"></span> 聯絡簿</div>
+            <ol id="contactList" class="contact-list"></ol>
+            <div class="empty" id="contactEmpty">還沒有聯絡簿事項。<br>在下方輸入一項，按 Enter 加入，可以一項一項慢慢加。</div>
+            <form id="contactForm" class="inline-form">
+              <input id="contactInput" placeholder="輸入一項，按 Enter 加入" autocomplete="off">
+              <button type="submit">＋</button>
+            </form>
+          </div>
+          <div class="tab-body hidden" data-body="countdown">
+            <div class="label">COUNTDOWN 倒數日</div>
+            <ul id="cdList" class="cd-list"></ul>
+            <form id="cdForm" class="inline-form cd-form">
+              <input id="cdName" placeholder="事件，例如：校慶" autocomplete="off" required>
+              <input id="cdDate" type="date" required>
+              <button type="submit">＋</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="panel glass center">
+          <div class="tabs" data-tabs="tool">
+            <button class="active" data-tab="clock">現在時間</button>
+            <button data-tab="timer">倒數</button>
+            <button data-tab="pomo">番茄鐘</button>
+            <button data-tab="task">任務</button>
+            <button data-tab="draw">抽號</button>
+            <button data-tab="noise">音量</button>
+          </div>
+          <div class="tool-body" data-body="clock">
+            <div class="big-clock" id="bigClock">00:00<span>:00</span></div>
+            <div class="clock-sub" id="clockSub"></div>
+          </div>
+          <div class="tool-body hidden" data-body="timer">
+            <div class="big-clock" id="timerDisp">05:00</div>
+            <div class="btn-row presets">
+              <button data-min="1">1分</button><button data-min="3">3分</button><button data-min="5">5分</button>
+              <button data-min="10">10分</button><button data-min="15">15分</button><button data-min="20">20分</button>
+            </div>
+            <div class="btn-row">
+              <button id="timerMinus">－1分</button>
+              <button id="timerStart" class="primary">開始</button>
+              <button id="timerReset">重設</button>
+              <button id="timerPlus">＋1分</button>
+            </div>
+          </div>
+          <div class="tool-body hidden" data-body="pomo">
+            <div class="pomo-mode" id="pomoMode">專心時間</div>
+            <div class="big-clock" id="pomoDisp">25:00</div>
+            <div class="pomo-count">已完成 <b id="pomoCount">0</b> 輪 🍅</div>
+            <div class="btn-row">
+              <button id="pomoStart" class="primary">開始</button>
+              <button id="pomoSkip">跳過</button>
+              <button id="pomoReset">重設</button>
+            </div>
+          </div>
+          <div class="tool-body hidden" data-body="task">
+            <select id="taskSelect" class="task-select"></select>
+            <div class="task-ring">
+              <svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="50" class="ring-bg"/><circle cx="60" cy="60" r="50" class="ring-fg" id="taskRing"/></svg>
+              <div class="ring-text"><b id="taskDone">0</b><span>/ <i id="taskTotal">0</i> 已完成</span></div>
+            </div>
+            <div class="task-missing" id="taskMissing"></div>
+            <button class="primary" data-goto="tasks">前往任務打卡</button>
+          </div>
+          <div class="tool-body hidden" data-body="draw">
+            <div class="draw-num" id="drawNum">?</div>
+            <div class="draw-name" id="drawName">按下按鈕抽一位幸運兒</div>
+            <div class="btn-row">
+              <button id="drawBtn" class="primary">抽號！</button>
+              <label class="chk"><input type="checkbox" id="drawNoRepeat" checked> 不重複</label>
+              <button id="drawReset">重置</button>
+            </div>
+            <div class="draw-history" id="drawHistory"></div>
+          </div>
+          <div class="tool-body hidden" data-body="noise">
+            <div class="noise-face" id="noiseFace">🎤</div>
+            <div class="noise-meter"><i id="noiseBar"></i><b id="noiseLine"></b></div>
+            <div class="noise-text" id="noiseText">按下「開始偵測」使用麥克風</div>
+            <div class="btn-row">
+              <button id="noiseBtn" class="primary">開始偵測</button>
+              <label class="chk">靈敏度 <input type="range" id="noiseThreshold" min="20" max="90" value="60"></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="right-col">
+          <div class="panel glass weather">
+            <div class="w-date" id="wDate"></div>
+            <div class="w-main"><span id="wIcon">⛅</span><b id="wTemp">--°C</b><small id="wRange"></small></div>
+            <div class="w-loc" id="wLoc"></div>
+            <div class="w-desc" id="wDesc">天氣載入中…</div>
+            <div class="w-src" id="wSrc"></div>
+          </div>
+          <div class="panel glass ambient">
+            <div class="label">AMBIENT 環境音</div>
+            <ul id="ambList" class="amb-list"></ul>
+            <label class="vol">音量 <input type="range" id="ambVol" min="0" max="100" value="50"></label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 任務打卡 -->
+    <section class="page" data-page="tasks">
+      <div class="panel glass page-panel">
+        <div class="page-head">
+          <h2>任務打卡 <small id="tasksDate"></small></h2>
+          <div class="task-tabs" id="taskTabs"></div>
+        </div>
+        <p class="hint">點自己的座號完成打卡，每完成一項 <b>+1 金幣</b>；再點一次可以取消。每累積 10 金幣就會在山林裡發現一種新物種！</p>
+        <div class="seat-grid" id="seatGrid"></div>
+      </div>
+    </section>
+
+    <!-- 全班夥伴 -->
+    <section class="page" data-page="students">
+      <div class="panel glass page-panel">
+        <div class="page-head"><h2>全班夥伴</h2><span class="hint">點卡片看每位同學發現的物種</span></div>
+        <div class="student-grid" id="studentGrid"></div>
+      </div>
+    </section>
+
+    <!-- 山林圖鑑 -->
+    <section class="page" data-page="dex">
+      <div class="panel glass page-panel">
+        <div class="page-head">
+          <h2>山林圖鑑 <small id="dexCount"></small></h2>
+          <div class="task-tabs" id="dexTabs">
+            <button class="active" data-cat="all">全部</button>
+            <button data-cat="bird">鳥類</button>
+            <button data-cat="animal">動物</button>
+            <button data-cat="insect">昆蟲</button>
+            <button data-cat="plant">植物</button>
+          </div>
+        </div>
+        <div class="dex-grid" id="dexGrid"></div>
+      </div>
+    </section>
+
+    <!-- 班級統計 -->
+    <section class="page" data-page="stats">
+      <div class="panel glass page-panel">
+        <div class="page-head"><h2>班級統計</h2></div>
+        <div class="stat-cards" id="statCards"></div>
+        <div class="stats-two">
+          <div>
+            <h3>近 7 天任務完成率</h3>
+            <div class="week-chart" id="weekChart"></div>
+          </div>
+          <div>
+            <h3>各座號金幣（依座號排列）</h3>
+            <div class="seat-bars" id="seatBars"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottomnav glass">
+    <button class="active" data-goto="home"><span>🏠</span>首頁</button>
+    <button data-goto="tasks"><span>✅</span>任務打卡</button>
+    <button data-goto="students"><span>🧑‍🤝‍🧑</span>全班夥伴</button>
+    <button data-goto="dex"><span>📖</span>山林圖鑑</button>
+    <button data-goto="stats"><span>📊</span>班級統計</button>
+    <button id="consoleBtn"><span>🔒</span>教師控制台</button>
+    <span class="spacer"></span>
+    <button onclick="window.open('guide.html','_blank')" title="安裝與使用說明"><span>❓</span>說明</button>
+    <button id="cleanBtn" title="只顯示時間"><span>👁️</span>簡潔</button>
+    <button id="fullBtn" title="全螢幕"><span>⛶</span>全螢幕</button>
+  </nav>
+</div>
+
+<div id="cleanClock" class="clean-clock hidden"></div>
+
+<!-- ===== 對話框 ===== -->
+<div id="modal" class="modal hidden">
+  <div class="modal-card glass" id="modalCard"></div>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="js/species.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
