@@ -412,3 +412,35 @@ body.clean #app { display: none; }
   .edit-rows .er input:nth-child(3) { grid-column: 1 / 2; }
   .bottomnav button { padding: 6px 8px; }
 }
+
+
+/* -------- 作業檢查 -------- */
+.hw-toolbar { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 14px; }
+.hw-list { display: flex; flex-direction: column; gap: 16px; }
+.hw-card { border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: rgba(0,0,0,.18); }
+.hw-card.done-card { opacity: .85; }
+.hw-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+.hw-head b { color: var(--accent); margin-right: 6px; }
+.hw-src { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 1px 8px; margin-left: 6px; }
+.hw-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.hw-counts { font-size: 13px; color: var(--muted); }
+.hw-skip { font-size: 12px; padding: 4px 10px; }
+.hw-legend { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.hw-legend .lg-miss { color: #f0a0a0; }
+.hw-legend .lg-fix { color: #f0d080; }
+.hw-legend .lg-done { color: #8fe0b0; }
+.hw-done-wrap { margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.seat.hw-miss { background: rgba(255, 120, 120, .12); border-color: rgba(255, 140, 140, .45); }
+.seat.hw-fix { background: rgba(240, 180, 60, .18); border-color: rgba(240, 200, 80, .55); }
+.seat.hw-done { background: linear-gradient(160deg, #6cc49a, #3f9c7c); border-color: #a6efc4; }
+.seat .hw-badge { position: absolute; top: 6px; right: 8px; font-size: 12px; font-weight: 900; font-style: normal; opacity: .9; }
+.seat.hw-miss .hw-badge { color: #f0a0a0; }
+.seat.hw-fix .hw-badge { color: #f5d070; }
+.seat.hw-done .hw-badge { color: #eafff2; }
+.seat-grid.compact { gap: 6px; }
+.seat-grid.compact .seat { aspect-ratio: 1; border-radius: 12px; }
+.seat-grid.compact .seat b { font-size: 22px; }
+@media (max-width: 560px) {
+  .hw-toolbar { flex-direction: column; }
+  .hw-head { flex-direction: column; align-items: flex-start; }
+}

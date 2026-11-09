@@ -166,7 +166,7 @@
               <div class="ring-text"><b id="taskDone">0</b><span>/ <i id="taskTotal">0</i> 已完成</span></div>
             </div>
             <div class="task-missing" id="taskMissing"></div>
-            <button class="primary" data-goto="tasks">前往任務打卡</button>
+            <button class="primary" data-goto="tasks">前往作業檢查</button>
           </div>
           <div class="tool-body hidden" data-body="draw">
             <div class="draw-num" id="drawNum">?</div>
@@ -206,15 +206,34 @@
       </div>
     </section>
 
-    <!-- 任務打卡 -->
+    <!-- 作業檢查／每日任務 -->
     <section class="page" data-page="tasks">
       <div class="panel glass page-panel">
         <div class="page-head">
-          <h2>任務打卡 <small id="tasksDate"></small></h2>
-          <div class="task-tabs" id="taskTabs"></div>
+          <h2>作業與任務 <small id="tasksDate"></small></h2>
+          <div class="task-tabs" id="tasksModeTabs">
+            <button type="button" class="active" data-mode="hw">📕 作業檢查</button>
+            <button type="button" data-mode="daily">✅ 每日任務</button>
+          </div>
         </div>
-        <p class="hint">點自己的座號完成打卡，每完成一項 <b>+1 金幣</b>；再點一次可以取消。每累積 10 金幣就會在山林裡發現一種新物種！</p>
-        <div class="seat-grid" id="seatGrid"></div>
+
+        <div id="hwPanel">
+          <div class="hw-toolbar">
+            <p class="hint" style="margin:0;flex:1">今天聯絡簿寫的作業，<b>明天</b>才會出現在檢查清單。點座號循環：沒交 → 要訂正 → 完成（+1 金幣）。不是作業的項目可按「不需檢查」。</p>
+            <button class="primary" id="hwAddBtn" type="button">＋ 補登作業</button>
+          </div>
+          <div id="hwOpenList" class="hw-list"></div>
+          <div id="hwDoneWrap" class="hw-done-wrap" style="display:none">
+            <button type="button" class="btn" id="hwDoneToggle">查看已完成</button>
+            <div id="hwDoneList" class="hw-list" style="display:none"></div>
+          </div>
+        </div>
+
+        <div id="dailyTaskPanel" style="display:none">
+          <div class="task-tabs" id="taskTabs"></div>
+          <p class="hint">固定每日任務（打掃、放學整理等）。點座號打卡，每完成一項 <b>+1 金幣</b>；再點一次取消。</p>
+          <div class="seat-grid" id="seatGrid"></div>
+        </div>
       </div>
     </section>
 
@@ -264,7 +283,7 @@
 
   <nav class="bottomnav glass">
     <button class="active" data-goto="home"><span>🏠</span>首頁</button>
-    <button data-goto="tasks"><span>✅</span>任務打卡</button>
+    <button data-goto="tasks"><span>📕</span>作業／任務</button>
     <button data-goto="students"><span>🧑‍🤝‍🧑</span>全班夥伴</button>
     <button data-goto="dex"><span>📖</span>山林圖鑑</button>
     <button data-goto="stats"><span>📊</span>班級統計</button>

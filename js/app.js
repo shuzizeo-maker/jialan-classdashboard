@@ -68,15 +68,18 @@ function defaults() {
     countdowns: [],
     taskDefs: [
       { id: 't1', name: '繳交作業', announce: false },
-      { id: 't2', name: '訂正完成', announce: true },
+      { id: 't2', name: '訂正完成', announce: false },
       { id: 't3', name: '打掃完成', announce: false },
       { id: 't4', name: '放學整理', announce: false }
     ],
     done: {},
+    // 作業檢查：依「佈置日」追蹤，今天佈置的明天才開始檢查
+    homework: [],
+    _hwMigrated: false,
     students: {},
     forest: { level: 1, points: 0 },
     log: [],
-    ui: { widgetTask: 't1', pageTask: 't1' }
+    ui: { widgetTask: 't1', pageTask: 't1', tasksTab: 'hw', showHwDone: false }
   };
 }
 function load() {
@@ -90,7 +93,9 @@ function load() {
     const m = String(s.settings?.schoolYear || '').match(/(\d+)\s*學年度?\s*(?:第\s*([一二12])\s*學期)?/);
     if (m && s.settings) { s.settings.schoolYear = m[1]; if (m[2] && !s.settings.semester) s.settings.semester = { 1: '一', 2: '二' }[m[2]] || m[2]; }
     const merged = { ...d, ...s, settings: { ...d.settings, ...s.settings, loc: { ...d.settings.loc, ...(s.settings?.loc || {}) } }, ui: { ...d.ui, ...s.ui }, forest: { ...d.forest, ...s.forest } };
+    if (!Array.isArray(merged.homework)) merged.homework = [];
     migrateTaskAnnounce(merged);
+    migrateHomework(merged);
     return merged;
   } catch (e) { console.warn(e); return defaults(); }
 }
@@ -100,6 +105,148 @@ function migrateTaskAnnounce(st) {
   if (st.taskDefs.some(t => 'announce' in t)) return;
   st.taskDefs.forEach(t => { t.announce = /訂正/.test(String(t.name || '')); });
 }
+/* ---------------- 作業檢查（資料層） ---------------- */
+const HW_CYCLE = { miss: 'fix', fix: 'done', done: 'miss' };
+const HW_LABEL = { miss: '沒交', fix: '要訂正', done: '完成' };
+const HW_ICON = { miss: '📕', fix: '✏️', done: '✅' };
+
+function migrateHomework(st) {
+  if (!Array.isArray(st.homework)) st.homework = [];
+  if (st._hwMigrated) return;
+  // 從既有聯絡簿產生作業紀錄（今天的仍會被 UI 排除到隔天）
+  Object.keys(st.contact || {}).forEach(dk => syncContactToHomework(dk, st));
+  // 啟用作業檢查後，舊的「繳交作業／訂正完成」預設不再佔跑馬燈（老師仍可手動勾選）
+  (st.taskDefs || []).forEach(t => {
+    if (/^(繳交作業|訂正完成)$/.test(String(t.name || ''))) t.announce = false;
+  });
+  st._hwMigrated = true;
+}
+
+// 聯絡簿某一天 ↔ 作業紀錄同步
+function syncContactToHomework(dk, st = state) {
+  if (!Array.isArray(st.homework)) st.homework = [];
+  const items = st.contact[dk] || [];
+  const byCid = new Map();
+  st.homework.forEach(h => {
+    if (h.source === 'contact' && h.date === dk) byCid.set(h.contactId || h.id, h);
+  });
+  items.forEach(it => {
+    const key = it.id;
+    const exist = byCid.get(key);
+    if (exist) {
+      exist.title = it.text;
+      byCid.delete(key);
+    } else {
+      st.homework.push({
+        id: 'hw_' + it.id,
+        contactId: it.id,
+        date: dk,
+        title: it.text,
+        source: 'contact',
+        skipped: false,
+        statuses: {},
+        coinAwarded: {}
+      });
+    }
+  });
+  // 聯絡簿已刪：沒有任何狀態紀錄就一併移除；已有檢查進度則保留
+  byCid.forEach(h => {
+    const has = h.statuses && Object.keys(h.statuses).length > 0;
+    if (!has) st.homework = st.homework.filter(x => x.id !== h.id);
+  });
+}
+
+function hwDateLabel(dk) {
+  const [y, m, d] = dk.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return `${m}/${d}（${WEEK[dt.getDay()]}）`;
+}
+function hwShortDate(dk) {
+  const [, m, d] = dk.split('-');
+  return `${+m}/${+d}`;
+}
+function hwStatusOf(h, seat) {
+  return (h.statuses && h.statuses[seat]) || 'miss';
+}
+function hwCounts(h, seats = activeSeats()) {
+  const c = { miss: 0, fix: 0, done: 0 };
+  seats.forEach(s => { c[hwStatusOf(h, s)]++; });
+  return c;
+}
+function hwIsComplete(h, seats = activeSeats()) {
+  if (!seats.length) return true;
+  return seats.every(s => hwStatusOf(h, s) === 'done');
+}
+// 開放檢查中的作業：佈置日早於今天、未略過、尚未全班完成
+function openHomework(today = dateKey()) {
+  return state.homework
+    .filter(h => !h.skipped && h.date < today && !hwIsComplete(h))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+}
+function doneHomework(today = dateKey(), days = 14) {
+  const cut = new Date(); cut.setHours(0, 0, 0, 0); cut.setDate(cut.getDate() - days);
+  const cutKey = dateKey(cut);
+  return state.homework
+    .filter(h => !h.skipped && h.date < today && h.date >= cutKey && hwIsComplete(h))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+function addManualHomework(dk, title) {
+  const t = String(title || '').trim();
+  if (!t || !dk) return null;
+  const item = {
+    id: 'hwm_' + uid(),
+    contactId: null,
+    date: dk,
+    title: t,
+    source: 'manual',
+    skipped: false,
+    statuses: {},
+    coinAwarded: {}
+  };
+  state.homework.push(item);
+  return item;
+}
+function setHwStatus(h, seat, next) {
+  h.statuses ||= {};
+  h.coinAwarded ||= {};
+  const prev = hwStatusOf(h, seat);
+  if (prev === next) return;
+  // 金幣：進入「完成」+1、離開「完成」−1（與每日任務打卡相同，避免同一次循環重複給）
+  if (next === 'done' && prev !== 'done') {
+    addCoins(seat, 1, '作業完成：' + h.title);
+    h.coinAwarded[seat] = true;
+  } else if (prev === 'done' && next !== 'done') {
+    if (h.coinAwarded[seat]) {
+      addCoins(seat, -1, '取消作業完成：' + h.title);
+      delete h.coinAwarded[seat];
+    }
+  }
+  if (next === 'miss') delete h.statuses[seat];
+  else h.statuses[seat] = next;
+}
+function cycleHwSeat(h, seat) {
+  const next = HW_CYCLE[hwStatusOf(h, seat)] || 'fix';
+  setHwStatus(h, seat, next);
+  return next;
+}
+
+// 跑馬燈：開放作業的未繳／待訂正（依作業、依狀態，含多天累積）
+function buildHwAnnParts(homework, seats, today = dateKey()) {
+  if (!seats.length) return [];
+  const open = (homework || [])
+    .filter(h => !h.skipped && h.date < today && !hwIsComplete(h, seats))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+  const parts = [];
+  open.forEach(h => {
+    const miss = seats.filter(s => hwStatusOf(h, s) === 'miss');
+    const fix = seats.filter(s => hwStatusOf(h, s) === 'fix');
+    const label = `${hwShortDate(h.date)} ${h.title}`;
+    if (miss.length) parts.push(`📕 未繳 ${label}：${miss.map(n => pad(n)).join('、')}`);
+    if (fix.length) parts.push(`✏️ 待訂正 ${label}：${fix.map(n => pad(n)).join('、')}`);
+  });
+  return parts;
+}
+
 let state = load();
 let saveTimer;
 function save() {
@@ -158,8 +305,8 @@ function bindTabs(group, onChange) {
 }
 
 /* ---------------- 頂部 ---------------- */
-// 組成跑馬燈片段：老師公告 + 勾選「顯示在公告」且今天尚未完成的任務（不寫入 settings.announcement）
-function buildAnnParts(announcement, taskDefs, seats, doneRec) {
+// 組成跑馬燈片段：老師公告 + 每日任務自動則 + 作業未繳／待訂正（不寫入 settings.announcement）
+function buildAnnParts(announcement, taskDefs, seats, doneRec, homework) {
   const ann = (announcement || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   const auto = [];
   if (seats.length) {
@@ -173,6 +320,8 @@ function buildAnnParts(announcement, taskDefs, seats, doneRec) {
       auto.push(`📝 尚未${label}：${miss.map(n => pad(n)).join('、')}`);
     });
   }
+  // 作業檢查公告（可跨多天累積）
+  auto.push(...buildHwAnnParts(homework || [], seats));
   return [...ann, ...auto];
 }
 function renderHeader() {
@@ -182,14 +331,15 @@ function renderHeader() {
   $('#className').textContent = s.className;
   document.title = `${s.className}｜班級儀表板`;
   const seats = activeSeats();
-  // 自動帶出尚未完成的座號；全班完成或無人座號時不顯示該則
-  const parts = buildAnnParts(s.announcement, state.taskDefs, seats, todayDone());
+  const parts = buildAnnParts(s.announcement, state.taskDefs, seats, todayDone(), state.homework);
   const text = parts.length ? parts.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
   const annEl = $('#annText');
   // 文字沒變就別動 textContent，避免跑馬燈動畫每秒重來
   if (annEl.textContent !== text) {
     annEl.textContent = text;
-    annEl.style.animationDuration = Math.max(14, text.length * .45) + 's';
+    // 長度決定速度；過長時設上限，避免跑馬燈慢到不像在動
+    const dur = Math.min(90, Math.max(14, text.length * .45));
+    annEl.style.animationDuration = dur + 's';
   }
   annEl.classList.toggle('placeholder', !parts.length);
   $('#statCoins').textContent = seats.reduce((a, n) => a + (state.students[n]?.coins || 0), 0);
@@ -320,14 +470,18 @@ $('#contactForm').addEventListener('submit', e => {
   (state.contact[key] ||= []).push({ id: uid(), text: v });
   const keys = Object.keys(state.contact).sort();
   while (keys.length > 60) delete state.contact[keys.shift()];
+  syncContactToHomework(key);
   $('#contactInput').value = '';
-  save(); renderContact();
+  save(); renderContact(); renderHeader(); renderTaskWidget();
+  if ($('.page.active')?.dataset.page === 'tasks') renderTasksPage();
 });
 $('#contactList').addEventListener('click', e => {
   const b = e.target.closest('.del'); if (!b || !canEditBoard()) return;
   const key = dateKey();
   state.contact[key] = (state.contact[key] || []).filter(i => i.id !== b.dataset.id);
-  save(); renderContact();
+  syncContactToHomework(key);
+  save(); renderContact(); renderHeader(); renderTaskWidget();
+  if ($('.page.active')?.dataset.page === 'tasks') renderTasksPage();
 });
 
 /* ---------------- 倒數日 ---------------- */
@@ -671,27 +825,63 @@ $('#pomoStart').onclick = () => {
 $('#pomoSkip').onclick = pomoNext;
 $('#pomoReset').onclick = () => { clearInterval(pomo.iv); Object.assign(pomo, { focus: true, left: 1500, running: false, count: 0 }); showPomo(); };
 
-/* ---------------- 任務 ---------------- */
+/* ---------------- 任務／作業檢查 ---------------- */
 function taskOptions(sel) {
-  return state.taskDefs.map(t => `<option value="${t.id}" ${t.id === sel ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
+  const daily = state.taskDefs.map(t => `<option value="${t.id}" ${t.id === sel ? 'selected' : ''}>✅ ${esc(t.name)}</option>`).join('');
+  const hw = openHomework().map(h => {
+    const v = 'hw:' + h.id;
+    return `<option value="${v}" ${v === sel ? 'selected' : ''}>📕 ${esc(hwShortDate(h.date) + ' ' + h.title)}</option>`;
+  }).join('');
+  const grp = [];
+  if (hw) grp.push(`<optgroup label="作業檢查（未完成）">${hw}</optgroup>`);
+  if (daily) grp.push(`<optgroup label="每日任務">${daily}</optgroup>`);
+  return grp.join('') || '<option>尚未設定</option>';
 }
 function renderTaskWidget() {
-  if (!state.taskDefs.find(t => t.id === state.ui.widgetTask)) state.ui.widgetTask = state.taskDefs[0]?.id;
+  const open = openHomework();
+  // 若目前選的作業已不存在，改選第一筆開放作業或第一個每日任務
+  const cur = state.ui.widgetTask;
+  const validHw = cur && cur.startsWith('hw:') && open.some(h => ('hw:' + h.id) === cur);
+  const validDaily = state.taskDefs.some(t => t.id === cur);
+  if (!validHw && !validDaily) state.ui.widgetTask = open[0] ? 'hw:' + open[0].id : (state.taskDefs[0]?.id || '');
   const id = state.ui.widgetTask;
-  $('#taskSelect').innerHTML = taskOptions(id) || '<option>尚未設定任務</option>';
-  const seats = activeSeats(), done = new Set(todayDone()[id] || []);
-  const n = seats.filter(s => done.has(s)).length;
+  $('#taskSelect').innerHTML = taskOptions(id);
+  const seats = activeSeats();
+  let n = 0, missHtml = '';
+  if (id && id.startsWith('hw:')) {
+    const h = state.homework.find(x => x.id === id.slice(3));
+    if (h) {
+      const c = hwCounts(h, seats);
+      n = c.done;
+      missHtml = !seats.length ? '' : (c.miss + c.fix)
+        ? `沒交 <b>${c.miss}</b>　要訂正 <b>${c.fix}</b>　完成 <b>${c.done}</b>`
+        : '🎉 全班都完成了！';
+    }
+  } else {
+    const done = new Set(todayDone()[id] || []);
+    n = seats.filter(s => done.has(s)).length;
+    const miss = seats.filter(s => !done.has(s));
+    missHtml = !seats.length ? '' : miss.length ? `尚未完成：<b>${miss.map(s => pad(s)).join('、')}</b>` : '🎉 全班都完成了！';
+  }
   $('#taskDone').textContent = n; $('#taskTotal').textContent = seats.length;
   $('#taskRing').style.strokeDashoffset = 314.16 * (1 - (seats.length ? n / seats.length : 0));
-  const miss = seats.filter(s => !done.has(s));
-  $('#taskMissing').innerHTML = !seats.length ? '' : miss.length ? `尚未完成：<b>${miss.map(s => pad(s)).join('、')}</b>` : '🎉 全班都完成了！';
+  $('#taskMissing').innerHTML = missHtml;
 }
 $('#taskSelect').onchange = e => { state.ui.widgetTask = e.target.value; save(); renderTaskWidget(); };
 
 function renderTasksPage() {
-  if (!state.taskDefs.find(t => t.id === state.ui.pageTask)) state.ui.pageTask = state.taskDefs[0]?.id;
   const d = new Date();
   $('#tasksDate').textContent = `${d.getMonth() + 1}/${d.getDate()}（${WEEK[d.getDay()]}）`;
+  const tab = state.ui.tasksTab === 'daily' ? 'daily' : 'hw';
+  $$('#tasksModeTabs button').forEach(b => b.classList.toggle('active', b.dataset.mode === tab));
+  const hwPanel = $('#hwPanel'), dailyPanel = $('#dailyTaskPanel');
+  if (hwPanel) hwPanel.style.display = tab === 'hw' ? '' : 'none';
+  if (dailyPanel) dailyPanel.style.display = tab === 'daily' ? '' : 'none';
+  if (tab === 'hw') renderHomeworkPanel();
+  else renderDailyTaskPanel();
+}
+function renderDailyTaskPanel() {
+  if (!state.taskDefs.find(t => t.id === state.ui.pageTask)) state.ui.pageTask = state.taskDefs[0]?.id;
   const rec = todayDone(), seats = activeSeats();
   $('#taskTabs').innerHTML = state.taskDefs.map(t => {
     const c = (rec[t.id] || []).filter(s => seats.includes(s)).length;
@@ -700,9 +890,89 @@ function renderTasksPage() {
   const done = new Set(rec[state.ui.pageTask] || []);
   $('#seatGrid').innerHTML = seats.map(s => `<button class="seat ${done.has(s) ? 'done' : ''}" data-seat="${s}"><b>${pad(s)}</b><small>${esc(nameOf(s)) || '&nbsp;'}</small></button>`).join('');
 }
+function renderHomeworkPanel() {
+  const seats = activeSeats();
+  const open = openHomework();
+  const box = $('#hwOpenList');
+  if (!box) return;
+  if (!open.length) {
+    box.innerHTML = '<p class="hint">目前沒有待檢查的作業。今天聯絡簿新增的項目，<b>明天</b>才會出現在這裡；也可按「＋ 補登作業」。</p>';
+  } else {
+    box.innerHTML = open.map(h => hwCardHTML(h, seats)).join('');
+  }
+  const done = doneHomework();
+  const hist = $('#hwDoneList');
+  const wrap = $('#hwDoneWrap');
+  if (wrap) wrap.style.display = done.length ? '' : 'none';
+  if (hist) {
+    hist.style.display = state.ui.showHwDone ? '' : 'none';
+    hist.innerHTML = done.map(h => {
+      const c = hwCounts(h, seats);
+      return `<div class="hw-card done-card" data-hw="${h.id}">
+        <div class="hw-head"><div><b>${esc(hwDateLabel(h.date))}</b> ${esc(h.title)}
+          <span class="hw-src">${h.source === 'manual' ? '補登' : '聯絡簿'}</span></div>
+          <span class="hw-counts">✅ 完成 ${c.done}/${seats.length}</span></div>
+        <div class="seat-grid compact">${seats.map(s => seatHwBtn(h, s)).join('')}</div>
+      </div>`;
+    }).join('') || '';
+  }
+  const tog = $('#hwDoneToggle');
+  if (tog) tog.textContent = state.ui.showHwDone ? '收合已完成' : `查看已完成（${done.length}）`;
+}
+function seatHwBtn(h, s) {
+  const st = hwStatusOf(h, s);
+  return `<button class="seat hw-${st}" data-hw="${h.id}" data-seat="${s}" title="${HW_LABEL[st]}">
+    <b>${pad(s)}</b><small>${esc(nameOf(s)) || '&nbsp;'}</small>
+    <i class="hw-badge">${st === 'done' ? '✓' : st === 'fix' ? '訂' : '未'}</i></button>`;
+}
+function hwCardHTML(h, seats) {
+  const c = hwCounts(h, seats);
+  return `<div class="hw-card" data-hw="${h.id}">
+    <div class="hw-head">
+      <div><b>${esc(hwDateLabel(h.date))}</b> ${esc(h.title)}
+        <span class="hw-src">${h.source === 'manual' ? '補登' : '聯絡簿'}</span></div>
+      <div class="hw-actions">
+        <span class="hw-counts">沒交 ${c.miss}　要訂正 ${c.fix}　完成 ${c.done}</span>
+        <button class="btn hw-skip" data-skip="${h.id}" title="不當作業檢查（例如班級事項）">不需檢查</button>
+      </div>
+    </div>
+    <div class="seat-grid">${seats.map(s => seatHwBtn(h, s)).join('')}</div>
+    <p class="hw-legend">點座號循環：<span class="lg-miss">沒交</span> → <span class="lg-fix">要訂正</span> → <span class="lg-done">完成</span>（完成 +1 金幣）</p>
+  </div>`;
+}
+
+// 頁面模式切換：作業檢查 / 每日任務
+document.addEventListener('click', e => {
+  const modeBtn = e.target.closest('#tasksModeTabs [data-mode]');
+  if (modeBtn) {
+    state.ui.tasksTab = modeBtn.dataset.mode;
+    save(); renderTasksPage();
+    return;
+  }
+  if (e.target.closest('#hwDoneToggle')) {
+    state.ui.showHwDone = !state.ui.showHwDone;
+    save(); renderHomeworkPanel();
+    return;
+  }
+  const skip = e.target.closest('[data-skip]');
+  if (skip) {
+    const h = state.homework.find(x => x.id === skip.dataset.skip);
+    if (!h) return;
+    if (!confirm(`確定「${h.title}」不需檢查？\n（可在已略過項目中復原；不會刪除聯絡簿內容）`)) return;
+    h.skipped = true;
+    save(); renderTasksPage(); renderTaskWidget(); renderHeader();
+    toast('已標示為不需檢查');
+    return;
+  }
+  if (e.target.closest('#hwAddBtn')) {
+    openHwAddModal();
+    return;
+  }
+});
+
 $('#taskTabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
-  state.ui.pageTask = b.dataset.id; save(); renderTasksPage();
+  state.ui.pageTask = b.dataset.id; save(); renderDailyTaskPanel();
 });
 $('#seatGrid').addEventListener('click', e => {
   const b = e.target.closest('.seat'); if (!b) return;
@@ -711,9 +981,46 @@ $('#seatGrid').addEventListener('click', e => {
   const i = arr.indexOf(seat);
   if (i >= 0) { arr.splice(i, 1); addCoins(seat, -1, '取消打卡'); }
   else { arr.push(seat); addCoins(seat, 1, '任務：' + (state.taskDefs.find(t => t.id === tid)?.name || '')); ensureAudio(); chime(); }
-  save(); renderTasksPage(); renderTaskWidget(); renderHeader();
-  const nb = $(`.seat[data-seat="${seat}"]`); nb && nb.classList.add('pop');
+  save(); renderDailyTaskPanel(); renderTaskWidget(); renderHeader();
+  const nb = $(`#seatGrid .seat[data-seat="${seat}"]`); nb && nb.classList.add('pop');
 });
+// 作業座號循環點擊（事件委派在作業列表）
+document.addEventListener('click', e => {
+  const b = e.target.closest('#hwOpenList .seat, #hwDoneList .seat');
+  if (!b) return;
+  const h = state.homework.find(x => x.id === b.dataset.hw); if (!h) return;
+  const seat = +b.dataset.seat;
+  const next = cycleHwSeat(h, seat);
+  if (next === 'done') { ensureAudio(); chime(); }
+  save(); renderHomeworkPanel(); renderTaskWidget(); renderHeader();
+  const nb = $(`.seat[data-hw="${h.id}"][data-seat="${seat}"]`);
+  nb && nb.classList.add('pop');
+});
+
+function openHwAddModal() {
+  const yest = new Date(); yest.setDate(yest.getDate() - 1);
+  const def = dateKey(yest);
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>＋ 補登作業</h2>
+    <p class="sub">用於漏登的舊作業，或聯絡簿沒寫但需要檢查的項目。佈置日必須早於今天才會進入檢查清單。</p>
+    <div class="field"><span>佈置日期</span><input type="date" id="hwAddDate" value="${def}"></div>
+    <div class="field"><span>作業名稱</span><input id="hwAddTitle" placeholder="例如：數習 p48、生甲：p36-p40" maxlength="80"></div>
+    <div class="modal-actions"><button class="primary" id="hwAddSave">新增</button></div>`);
+  setTimeout(() => {
+    const saveBtn = $('#hwAddSave');
+    if (!saveBtn) return;
+    saveBtn.onclick = () => {
+      const dk = $('#hwAddDate').value, title = $('#hwAddTitle').value.trim();
+      if (!dk) return toast('請選擇日期');
+      if (!title) return toast('請輸入作業名稱');
+      if (dk >= dateKey()) return toast('佈置日須早於今天（今天的作業明天再檢查）');
+      addManualHomework(dk, title);
+      save(); closeModal(); renderTasksPage(); renderTaskWidget(); renderHeader();
+      toast('✅ 已補登作業');
+    };
+  }, 0);
+}
+
 
 /* ---------------- 金幣 / 物種 ---------------- */
 const celebrateQueue = [];
@@ -1349,7 +1656,9 @@ function ctData(el) {
         if (!d.settings || !d.students) throw new Error('格式不符');
         if (!confirm(`要用備份檔「${f.name}」取代目前全部資料嗎？`)) return;
         state = { ...defaults(), ...d, settings: { ...defaults().settings, ...d.settings } };
+        if (!Array.isArray(state.homework)) state.homework = [];
         migrateTaskAnnounce(state);
+        migrateHomework(state);
         setAuth();
         save(); renderAll(); loadWeather(); toast('✅ 已匯入備份'); openConsole('data');
       } catch (err) { toast('❌ 這不是正確的備份檔'); }
@@ -1366,7 +1675,7 @@ function ctData(el) {
   $('#dNewYear').onclick = () => {
     if (!confirm('確定要開始新學年？目前班級的學生資料會被清空（會先下載備份）。')) return;
     exportData('學年結束備份');
-    Object.assign(state, { students: {}, done: {}, contact: {}, log: [], forest: { level: 1, points: 0 } });
+    Object.assign(state, { students: {}, done: {}, contact: {}, homework: [], log: [], forest: { level: 1, points: 0 } });
     Object.assign(state.settings, { names: {}, vacant: [], schoolYear: '', semester: '' });
     save(); renderAll();
     toast('✅ 已清空，請設定新班級資料', 3000);
@@ -1415,6 +1724,11 @@ loadWeather();
 if (!state.settings.setupDone) openSetup();
 // 測試用 hook（正式畫面不依賴）
 if (typeof globalThis !== 'undefined') {
-  globalThis.__jlTest = { buildAnnParts, migrateTaskAnnounce, pad, dateKey };
+  globalThis.__jlTest = {
+    buildAnnParts, buildHwAnnParts, migrateTaskAnnounce, migrateHomework,
+    syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
+    setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
+    getState: () => state, setState: (s) => { state = s; }
+  };
 }
 })();
