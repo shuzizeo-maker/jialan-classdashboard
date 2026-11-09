@@ -6,6 +6,8 @@
 <title>班級儀表板</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
+<link rel="icon" href="images/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png" sizes="180x180">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -72,8 +74,11 @@
       <button class="ann-edit" id="annEdit" title="編輯公告">✎</button>
     </div>
     <div class="brand">
-      <div class="school" id="schoolName"></div>
-      <h1 id="className"></h1>
+      <img class="school-logo" src="images/school-logo.png" width="72" height="72" alt="嘉蘭國小校徽" decoding="async" onerror="this.style.display='none'">
+      <div class="brand-text">
+        <div class="school" id="schoolName"></div>
+        <h1 id="className"></h1>
+      </div>
     </div>
     <div class="stats glass">
       <div class="stat" title="全班累積金幣"><span class="ico coin">$</span><b id="statCoins">0</b><small>金幣</small></div>
@@ -308,11 +313,18 @@
     <span class="spacer"></span>
     <button onclick="window.open('guide.html','_blank')" title="安裝與使用說明"><span>❓</span>說明</button>
     <button id="cleanBtn" title="只顯示時間"><span>👁️</span>簡潔</button>
-    <button id="fullBtn" title="全螢幕"><span>⛶</span>全螢幕</button>
+    <span id="fsTopControls">
+      <button id="fullBtn" title="全螢幕"><span>⛶</span><em id="fullBtnLabel">全螢幕</em></button>
+    </span>
+    <span id="fsIframeControls" style="display:none">
+      <button id="fsNewTabBtn" title="在新分頁開啟後再全螢幕"><span>↗</span>新分頁全螢幕</button>
+      <button id="fsZoomBtn" title="放大填滿嵌入框"><span>⤢</span>放大模式</button>
+    </span>
   </nav>
 </div>
 
 <div id="cleanClock" class="clean-clock hidden"></div>
+<button id="fsZoomExit" type="button" style="display:none" title="離開放大模式">✕ 離開放大（Esc）</button>
 
 <!-- ===== 對話框 ===== -->
 <div id="modal" class="modal hidden">

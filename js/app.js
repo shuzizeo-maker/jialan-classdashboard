@@ -1768,12 +1768,84 @@ function exportData(tag = '備份') {
 }
 
 /* ---------------- 其他按鈕 ---------------- */
-$('#fullBtn').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+/* ---------------- 全螢幕（含 Google Sites iframe 後援） ---------------- */
+function inIframe() {
+  try { return window.self !== window.top; } catch (e) { return true; }
+}
+function fsEnabled() {
+  return !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+}
+function fsElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+function reqFs(el = document.documentElement) {
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.webkitRequestFullScreen;
+  return fn ? Promise.resolve(fn.call(el)) : Promise.reject(new Error('no fs'));
+}
+function exitFs() {
+  const fn = document.exitFullscreen || document.webkitExitFullscreen;
+  return fn ? Promise.resolve(fn.call(document)) : Promise.resolve();
+}
+function isZoomMode() { return document.body.classList.contains('fs-zoom'); }
+function setZoomMode(on) {
+  document.body.classList.toggle('fs-zoom', !!on);
+  const btn = $('#fsZoomExit');
+  if (btn) btn.style.display = on ? '' : 'none';
+  if (on) toast('已進入放大模式（按 Esc 或右上角離開）', 2500);
+}
+function updateFsButtons() {
+  const top = $('#fsTopControls'), ifr = $('#fsIframeControls');
+  const embed = inIframe();
+  // 頂層且瀏覽器支援全螢幕 → 單一全螢幕鈕；iframe 或無支援 → 新分頁＋放大
+  const useIframeUi = embed || !fsEnabled();
+  if (top) top.style.display = useIframeUi ? 'none' : 'contents';
+  if (ifr) ifr.style.display = useIframeUi ? 'contents' : 'none';
+  const lab = $('#fullBtnLabel');
+  if (lab) lab.textContent = fsElement() ? '離開全螢幕' : '全螢幕';
+}
+async function toggleRealFullscreen() {
+  try {
+    if (fsElement()) await exitFs();
+    else await reqFs();
+  } catch (e) {
+    // 被拒（常見於 iframe 未允許 allowfullscreen）→ 放大模式
+    setZoomMode(true);
+    toast('無法使用系統全螢幕，已改為放大模式', 2800);
+  }
+  updateFsButtons();
+}
+function openFullscreenNewTab() {
+  // 必須在 click 同步呼叫；不要加noopener，才能偵測是否被擋
+  const w = window.open(location.href, '_blank');
+  if (w) {
+    try { w.opener = null; } catch (e) {}
+    toast('已在新分頁開啟，到新分頁再按一次「全螢幕」', 3500);
+  } else {
+    setZoomMode(true);
+    toast('瀏覽器擋住新分頁，已改放大模式。也可直接打開：' + location.href, 10000);
+  }
+}
+$('#fullBtn') && ($('#fullBtn').onclick = () => toggleRealFullscreen());
+$('#fsNewTabBtn') && ($('#fsNewTabBtn').onclick = () => openFullscreenNewTab());
+$('#fsZoomBtn') && ($('#fsZoomBtn').onclick = () => setZoomMode(!isZoomMode()));
+$('#fsZoomExit') && ($('#fsZoomExit').onclick = () => setZoomMode(false));
+document.addEventListener('fullscreenchange', updateFsButtons);
+document.addEventListener('webkitfullscreenchange', updateFsButtons);
+updateFsButtons();
+
 $('#cleanBtn').onclick = () => { document.body.classList.add('clean'); $('#cleanClock').classList.remove('hidden'); tick(); };
 $('#cleanClock').onclick = () => { document.body.classList.remove('clean'); $('#cleanClock').classList.add('hidden'); };
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && !$('#modal').classList.contains('hidden') && !celebrateQueue.running) closeModal();
+  if (e.key === 'Escape') {
+    if (isZoomMode()) { setZoomMode(false); return; }
+    if (!$('#modal').classList.contains('hidden') && !celebrateQueue.running) closeModal();
+  }
 });
+
+// 測試用：iframe／全螢幕可用性判斷
+if (typeof globalThis !== 'undefined') {
+  globalThis.__jlFs = { inIframe, fsEnabled, fsElement, setZoomMode, isZoomMode, openFullscreenNewTab, updateFsButtons };
+}
 
 /* ---------------- 啟動 ---------------- */
 function renderAll() {
@@ -1796,6 +1868,7 @@ if (!state.settings.setupDone) openSetup();
 if (typeof globalThis !== 'undefined') {
   globalThis.__jlTest = {
     VoiceFilter: window.VoiceFilter,
+    Fs: globalThis.__jlFs,
     
     buildAnnParts, buildHwAnnParts, migrateTaskAnnounce, migrateHomework,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
