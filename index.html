@@ -88,6 +88,10 @@
         <div class="fm-head"><span>班級山林 <b id="forestLv">Lv.1</b></span><span id="forestPts">0/100</span></div>
         <div class="bar"><i id="forestBar"></i></div>
       </div>
+      <div class="theme-wrap">
+        <button type="button" id="themeBtn" class="theme-btn" title="更換主題色">🎨</button>
+        <div id="themePop" class="theme-pop" style="display:none" role="dialog" aria-label="主題色"></div>
+      </div>
     </div>
   </header>
 
@@ -107,7 +111,9 @@
             <ul id="schedList" class="sched-list"></ul>
           </div>
           <div class="tab-body hidden" data-body="contact">
-            <div class="label">CONTACT BOOK <span id="contactDate"></span> 聯絡簿</div>
+            <div class="label">CONTACT BOOK <span id="contactDate"></span> 聯絡簿
+              <button type="button" class="week-btn" id="openWeekFromContact" title="一次排一整週作業">📅 一週作業</button>
+            </div>
             <ol id="contactList" class="contact-list"></ol>
             <div class="empty" id="contactEmpty">還沒有聯絡簿事項。<br>在下方輸入一項，按 Enter 加入，可以一項一項慢慢加。</div>
             <button type="button" class="lock-hint">🔒 老師解鎖後才能新增，點此輸入密碼</button>
@@ -235,6 +241,7 @@
           <h2>作業與任務 <small id="tasksDate"></small></h2>
           <div class="task-tabs" id="tasksModeTabs">
             <button type="button" class="active" data-mode="hw">📕 作業檢查</button>
+            <button type="button" data-mode="week">📅 一週作業</button>
             <button type="button" data-mode="daily">✅ 每日任務</button>
           </div>
         </div>
@@ -249,6 +256,19 @@
             <button type="button" class="btn" id="hwDoneToggle">查看已完成</button>
             <div id="hwDoneList" class="hw-list" style="display:none"></div>
           </div>
+        </div>
+
+        <div id="weekPanel" style="display:none">
+          <div class="week-plan-toolbar">
+            <button type="button" class="btn" id="weekPrev">◀ 上週</button>
+            <b id="weekRangeLabel">本週</b>
+            <button type="button" class="btn" id="weekNext">下週 ▶</button>
+            <button type="button" class="btn" id="weekThis">本週</button>
+            <button type="button" class="btn" id="weekApplyAll" title="把星期一的內容套用到二～五">套用到每天</button>
+            <button type="button" class="primary" id="weekSave">💾 儲存一週作業</button>
+          </div>
+          <p class="hint">一次排好週一～週五的作業；儲存後會寫進各日聯絡簿，<b>隔天</b>就能在「作業檢查」打勾，未完成會出現在公告跑馬燈。</p>
+          <div id="weekGrid" class="week-plan-grid"></div>
         </div>
 
         <div id="dailyTaskPanel" style="display:none">

@@ -56,6 +56,7 @@ function defaults() {
       semester: '',
       studentEdit: false,
       announcement: '歡迎蒞臨臺東縣金峰鄉嘉蘭國民小學',
+      theme: 'default',
       maxSeat: 20,
       vacant: [],
       names: {},
@@ -205,6 +206,138 @@ function addManualHomework(dk, title) {
   };
   state.homework.push(item);
   return item;
+}
+
+/* ---------------- 一週作業規劃 ---------------- */
+// weekAnchor = 該週任意一天；回傳週一～週五的 dateKey
+function weekdaysOf(anchor = new Date()) {
+  const d = new Date(anchor); d.setHours(0, 0, 0, 0);
+  const day = d.getDay(); // 0日
+  const monOffset = day === 0 ? -6 : 1 - day;
+  const mon = new Date(d); mon.setDate(d.getDate() + monOffset);
+  return Array.from({ length: 5 }, (_, i) => {
+    const x = new Date(mon); x.setDate(mon.getDate() + i);
+    return dateKey(x);
+  });
+}
+function weekRangeLabel(keys) {
+  if (!keys.length) return '';
+  const a = keys[0], b = keys[4];
+  const fmt = k => `${+k.slice(5, 7)}/${+k.slice(8)}`;
+  const thisWeek = weekdaysOf()[0] === keys[0];
+  return `${fmt(a)}～${fmt(b)}${thisWeek ? '（本週）' : ''}`;
+}
+
+// 草稿：{ dateKey: string[] } 只存標題列
+let weekDraft = null; // { anchor: Date, lines: { [dk]: string[] } }
+function ensureWeekDraft(anchor) {
+  const keys = weekdaysOf(anchor);
+  const lines = {};
+  keys.forEach(dk => {
+    // 從聯絡簿載入（含一週作業寫入的項目）
+    const items = (state.contact[dk] || []).map(it => it.text);
+    lines[dk] = items.length ? items.slice() : [''];
+  });
+  weekDraft = { anchor: new Date(anchor), lines };
+  return weekDraft;
+}
+function readWeekGridFromDom() {
+  if (!weekDraft) return;
+  $$('#weekGrid .week-day').forEach(col => {
+    const dk = col.dataset.date;
+    weekDraft.lines[dk] = $$('.week-line input', col).map(inp => inp.value);
+  });
+}
+function renderWeekPlanner() {
+  if (!weekDraft) ensureWeekDraft(new Date());
+  const keys = weekdaysOf(weekDraft.anchor);
+  $('#weekRangeLabel').textContent = weekRangeLabel(keys);
+  const DAYN = ['一', '二', '三', '四', '五'];
+  $('#weekGrid').innerHTML = keys.map((dk, i) => {
+    const lines = weekDraft.lines[dk] || [''];
+    const [y, m, d] = dk.split('-').map(Number);
+    return `<div class="week-day" data-date="${dk}" data-i="${i}">
+      <div class="week-day-head"><b>週${DAYN[i]}</b><small>${m}/${d}</small></div>
+      <div class="week-day-lines">${lines.map((v, li) =>
+        `<div class="week-line" data-li="${li}">
+          <input value="${esc(v)}" placeholder="作業（可空白）" maxlength="80">
+          <button type="button" data-rm-line title="刪除此列">✕</button>
+        </div>`).join('')}</div>
+      <div class="week-day-actions">
+        <button type="button" data-add-line>＋ 新增一列</button>
+        ${i < 4 ? `<button type="button" data-copy-next>複製到下一天</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/** 將一週草稿寫入聯絡簿＋作業（依 date+title 合併，不重複）
+ *  @returns {{added, kept, removed, skipped}} */
+function applyWeekPlan(linesByDate) {
+  const result = { added: 0, kept: 0, removed: 0, skipped: [] };
+  Object.keys(linesByDate).forEach(dk => {
+    const desired = [...new Set(
+      (linesByDate[dk] || []).map(s => String(s || '').trim()).filter(Boolean)
+    )];
+    const existing = state.contact[dk] || [];
+    const byText = new Map();
+    existing.forEach(it => { if (!byText.has(it.text)) byText.set(it.text, it); });
+
+    const next = [];
+    const used = new Set();
+
+    // 1) 規劃中的標題：已有就保留（標 fromWeek），沒有就新增
+    desired.forEach(title => {
+      const hit = byText.get(title);
+      if (hit) {
+        hit.fromWeek = true;
+        next.push(hit);
+        used.add(hit.id);
+        used.add('t:' + title);
+        result.kept++;
+      } else {
+        const id = uid();
+        next.push({ id, text: title, fromWeek: true });
+        used.add(id);
+        used.add('t:' + title);
+        result.added++;
+      }
+    });
+
+    // 2) 保留非一週規劃的聯絡簿項目
+    existing.forEach(it => {
+      if (it.fromWeek) return;
+      if (used.has(it.id) || used.has('t:' + it.text)) return;
+      next.push(it);
+      used.add(it.id);
+      used.add('t:' + it.text);
+    });
+
+    // 3) 舊的 fromWeek 但不在 desired：無打卡則刪；有打卡則保留並列出
+    existing.forEach(it => {
+      if (!it.fromWeek) return;
+      if (desired.includes(it.text)) return;
+      const hw = (state.homework || []).find(h => h.contactId === it.id || h.id === 'hw_' + it.id);
+      const hasStatus = hw && hw.statuses && Object.keys(hw.statuses).length > 0;
+      if (hasStatus) {
+        if (!used.has(it.id)) {
+          next.push(it);
+          used.add(it.id);
+        }
+        result.skipped.push(`${hwShortDate(dk)} ${it.text}`);
+      } else {
+        result.removed++;
+        // 順便清掉無狀態的 homework
+        if (hw && (!hw.statuses || !Object.keys(hw.statuses).length)) {
+          state.homework = state.homework.filter(h => h.id !== hw.id);
+        }
+      }
+    });
+
+    state.contact[dk] = next;
+    syncContactToHomework(dk);
+  });
+  return result;
 }
 function setHwStatus(h, seat, next) {
   h.statuses ||= {};
@@ -872,12 +1005,15 @@ $('#taskSelect').onchange = e => { state.ui.widgetTask = e.target.value; save();
 function renderTasksPage() {
   const d = new Date();
   $('#tasksDate').textContent = `${d.getMonth() + 1}/${d.getDate()}（${WEEK[d.getDay()]}）`;
-  const tab = state.ui.tasksTab === 'daily' ? 'daily' : 'hw';
+  const tab = ['daily', 'week', 'hw'].includes(state.ui.tasksTab) ? state.ui.tasksTab : 'hw';
+  state.ui.tasksTab = tab;
   $$('#tasksModeTabs button').forEach(b => b.classList.toggle('active', b.dataset.mode === tab));
-  const hwPanel = $('#hwPanel'), dailyPanel = $('#dailyTaskPanel');
+  const hwPanel = $('#hwPanel'), dailyPanel = $('#dailyTaskPanel'), weekPanel = $('#weekPanel');
   if (hwPanel) hwPanel.style.display = tab === 'hw' ? '' : 'none';
   if (dailyPanel) dailyPanel.style.display = tab === 'daily' ? '' : 'none';
+  if (weekPanel) weekPanel.style.display = tab === 'week' ? '' : 'none';
   if (tab === 'hw') renderHomeworkPanel();
+  else if (tab === 'week') { if (!weekDraft) ensureWeekDraft(new Date()); renderWeekPlanner(); }
   else renderDailyTaskPanel();
 }
 function renderDailyTaskPanel() {
@@ -946,7 +1082,14 @@ document.addEventListener('click', e => {
   const modeBtn = e.target.closest('#tasksModeTabs [data-mode]');
   if (modeBtn) {
     state.ui.tasksTab = modeBtn.dataset.mode;
+    if (modeBtn.dataset.mode === 'week') ensureWeekDraft(weekDraft?.anchor || new Date());
     save(); renderTasksPage();
+    return;
+  }
+  if (e.target.closest('#openWeekFromContact')) {
+    state.ui.tasksTab = 'week';
+    ensureWeekDraft(new Date());
+    save(); goto('tasks');
     return;
   }
   if (e.target.closest('#hwDoneToggle')) {
@@ -997,7 +1140,83 @@ document.addEventListener('click', e => {
   nb && nb.classList.add('pop');
 });
 
+/* 一週作業：欄位操作 */
+document.addEventListener('click', e => {
+  if (!$('#weekPanel') || $('#weekPanel').style.display === 'none') return;
+  if (e.target.closest('#weekPrev')) {
+    readWeekGridFromDom();
+    const a = new Date(weekDraft.anchor); a.setDate(a.getDate() - 7);
+    ensureWeekDraft(a); renderWeekPlanner(); return;
+  }
+  if (e.target.closest('#weekNext')) {
+    readWeekGridFromDom();
+    const a = new Date(weekDraft.anchor); a.setDate(a.getDate() + 7);
+    ensureWeekDraft(a); renderWeekPlanner(); return;
+  }
+  if (e.target.closest('#weekThis')) {
+    readWeekGridFromDom();
+    ensureWeekDraft(new Date()); renderWeekPlanner(); return;
+  }
+  if (e.target.closest('#weekApplyAll')) {
+    readWeekGridFromDom();
+    const keys = weekdaysOf(weekDraft.anchor);
+    const src = (weekDraft.lines[keys[0]] || []).map(s => s.trim()).filter(Boolean);
+    if (!src.length) return toast('請先在「週一」填至少一項');
+    keys.slice(1).forEach(dk => { weekDraft.lines[dk] = src.slice(); });
+    renderWeekPlanner(); toast('已套用到週二～週五（尚未儲存）');
+    return;
+  }
+  if (e.target.closest('#weekSave')) {
+    if (!canEditBoard()) return teacherOpen('unlock');
+    readWeekGridFromDom();
+    const keys = weekdaysOf(weekDraft.anchor);
+    const payload = {};
+    keys.forEach(dk => { payload[dk] = weekDraft.lines[dk] || []; });
+    // 若有「已打卡卻要刪除」的項目，先確認
+    const doomed = [];
+    keys.forEach(dk => {
+      const desired = new Set((payload[dk] || []).map(s => String(s || '').trim()).filter(Boolean));
+      (state.contact[dk] || []).forEach(it => {
+        if (!it.fromWeek) return;
+        if (desired.has(it.text)) return;
+        const hw = (state.homework || []).find(h => h.contactId === it.id || h.id === 'hw_' + it.id);
+        if (hw && hw.statuses && Object.keys(hw.statuses).length) doomed.push(`${hwShortDate(dk)} ${it.text}`);
+      });
+    });
+    if (doomed.length) {
+      if (!confirm(`以下作業已有學生打卡紀錄，儲存時會保留它們（不會刪除）：\n\n${doomed.join('\n')}\n\n仍要儲存其餘變更嗎？`)) return;
+    }
+    const r = applyWeekPlan(payload);
+    save(); renderContact(); renderHeader(); renderTaskWidget(); renderWeekPlanner();
+    toast(`✅ 一週作業已儲存（新增 ${r.added}、保留 ${r.kept}、移除 ${r.removed}）`, 3500);
+    return;
+  }
+  const col = e.target.closest('#weekGrid .week-day');
+  if (!col) return;
+  readWeekGridFromDom();
+  const dk = col.dataset.date;
+  if (e.target.closest('[data-add-line]')) {
+    (weekDraft.lines[dk] ||= []).push('');
+    renderWeekPlanner(); return;
+  }
+  if (e.target.closest('[data-rm-line]')) {
+    const li = +e.target.closest('.week-line').dataset.li;
+    weekDraft.lines[dk].splice(li, 1);
+    if (!weekDraft.lines[dk].length) weekDraft.lines[dk] = [''];
+    renderWeekPlanner(); return;
+  }
+  if (e.target.closest('[data-copy-next]')) {
+    const i = +col.dataset.i;
+    const keys = weekdaysOf(weekDraft.anchor);
+    if (i >= keys.length - 1) return;
+    const src = (weekDraft.lines[dk] || []).map(s => s.trim()).filter(Boolean);
+    weekDraft.lines[keys[i + 1]] = src.length ? src.slice() : [''];
+    renderWeekPlanner(); toast('已複製到下一天（尚未儲存）');
+  }
+});
+
 function openHwAddModal() {
+
   const yest = new Date(); yest.setDate(yest.getDate() - 1);
   const def = dateKey(yest);
   openModal(`<button class="close" data-close>✕</button>
@@ -1847,6 +2066,48 @@ if (typeof globalThis !== 'undefined') {
   globalThis.__jlFs = { inIframe, fsEnabled, fsElement, setZoomMode, isZoomMode, openFullscreenNewTab, updateFsButtons };
 }
 
+/* ---------------- 主題色 ---------------- */
+const THEMES = [
+  { id: 'default', name: '原始山林', sw1: '#2f5c46', sw2: '#8fd694' },
+  { id: 'sakura', name: '櫻花粉紫', sw1: '#8a3a6a', sw2: '#ffb3d0' },
+  { id: 'aurora', name: '極光藍', sw1: '#1a5080', sw2: '#7ad7ff' },
+  { id: 'neon', name: '螢光橘', sw1: '#a04010', sw2: '#ffb060' },
+  { id: 'flow', name: '流光綠', sw1: '#1a8058', sw2: '#6ef0b0' },
+  { id: 'starry', name: '星空夜', sw1: '#282060', sw2: '#a8b4ff' },
+  { id: 'dawn', name: '晨曦金', sw1: '#a07030', sw2: '#ffd080' }
+];
+function applyTheme(id) {
+  const t = THEMES.find(x => x.id === id) || THEMES[0];
+  if (t.id === 'default') document.body.removeAttribute('data-theme');
+  else document.body.setAttribute('data-theme', t.id);
+  state.settings.theme = t.id;
+  $$('#themePop .theme-swatch').forEach(b => b.classList.toggle('active', b.dataset.theme === t.id));
+}
+function renderThemePop() {
+  const pop = $('#themePop'); if (!pop) return;
+  pop.innerHTML = THEMES.map(t =>
+    `<button type="button" class="theme-swatch ${state.settings.theme === t.id ? 'active' : ''}" data-theme="${t.id}" style="--sw1:${t.sw1};--sw2:${t.sw2}">
+      <div class="chip"></div><small>${esc(t.name)}</small></button>`).join('');
+}
+$('#themeBtn') && ($('#themeBtn').onclick = e => {
+  e.stopPropagation();
+  const pop = $('#themePop');
+  const show = pop.style.display === 'none';
+  renderThemePop();
+  pop.style.display = show ? '' : 'none';
+});
+document.addEventListener('click', e => {
+  const pop = $('#themePop'); if (!pop || pop.style.display === 'none') return;
+  if (e.target.closest('#themePop .theme-swatch')) {
+    applyTheme(e.target.closest('.theme-swatch').dataset.theme);
+    save();
+    pop.style.display = 'none';
+    toast('🎨 已套用主題');
+    return;
+  }
+  if (!e.target.closest('.theme-wrap')) pop.style.display = 'none';
+});
+
 /* ---------------- 啟動 ---------------- */
 function renderAll() {
   renderHeader(); renderSchedule(); renderContact(); renderCountdowns(); renderTaskWidget(); renderCritters();
@@ -1859,6 +2120,7 @@ buildStars();
 updateSky();
 showTimer(); showPomo();
 $('#noiseLine').style.left = $('#noiseThreshold').value + '%';
+applyTheme(state.settings.theme || 'default');
 renderAll();
 tick();
 setInterval(tick, 1000);
@@ -1867,6 +2129,8 @@ if (!state.settings.setupDone) openSetup();
 // 測試用 hook（正式畫面不依賴）
 if (typeof globalThis !== 'undefined') {
   globalThis.__jlTest = {
+    goto, renderWeekPlanner, renderTasksPage, weekdaysOf, weekRangeLabel, ensureWeekDraft, applyWeekPlan, applyTheme, THEMES,
+    getWeekDraft: () => weekDraft,
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,
     
