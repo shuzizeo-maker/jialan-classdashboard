@@ -1129,33 +1129,103 @@ function beepTick() {
 }
 $('#drawReset').onclick = () => { drawn = []; $('#drawNum').textContent = '?'; $('#drawName').textContent = '按下按鈕抽一位幸運兒'; $('#drawHistory').textContent = ''; };
 
-/* ---------------- 音量偵測 ---------------- */
+/* ---------------- 音量偵測（含人聲雜音過濾） ---------------- */
 let mic = null;
+const VF = () => window.VoiceFilter;
 $('#noiseThreshold').oninput = e => $('#noiseLine').style.left = e.target.value + '%';
+$('#noiseFilter') && ($('#noiseFilter').onchange = e => { if (mic?.tracker) mic.tracker.setStrength(e.target.value); });
+$('#noiseCalBtn') && ($('#noiseCalBtn').onclick = () => {
+  if (!mic?.tracker) return toast('請先按「開始偵測」');
+  mic.tracker.startCalibrate();
+  toast('正在測 5 秒環境音，請保持安靜…', 5000);
+});
+function stopMic() {
+  if (!mic) return;
+  mic.stream.getTracks().forEach(t => t.stop());
+  cancelAnimationFrame(mic.raf);
+  clearTimeout(mic.timer);
+  mic = null;
+  $('#noiseBtn').textContent = '開始偵測';
+  $('#noiseText').textContent = '已停止';
+  $('#noiseBar').style.width = 0;
+  $('#noiseRaw').textContent = '0';
+  $('#noiseVoice').textContent = '0';
+  const ig = $('#noiseIgnore'); if (ig) ig.style.display = 'none';
+}
 $('#noiseBtn').onclick = async () => {
-  if (mic) { mic.stream.getTracks().forEach(t => t.stop()); cancelAnimationFrame(mic.raf); mic = null; $('#noiseBtn').textContent = '開始偵測'; $('#noiseText').textContent = '已停止'; $('#noiseBar').style.width = 0; return; }
+  if (mic) { stopMic(); return; }
   try {
     ensureAudio();
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const src = actx.createMediaStreamSource(stream), an = actx.createAnalyser(); an.fftSize = 1024; src.connect(an);
-    const buf = new Uint8Array(an.fftSize);
-    mic = { stream, raf: 0, smooth: 0, loud: 0 };
+    if (!VF()) throw new Error('VoiceFilter missing');
+    // 盡量壓低系統 AGC／回音，讓咳嗽／掉筆的突發更明顯、也好過濾
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false }
+    });
+    const sr = actx.sampleRate;
+    const src = actx.createMediaStreamSource(stream);
+    // 人聲帶：高通 ~250 Hz → 低通 ~3500 Hz，再送進 Analyser
+    const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 250; hp.Q.value = 0.707;
+    const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3500; lp.Q.value = 0.707;
+    const anRaw = actx.createAnalyser(); anRaw.fftSize = 2048; anRaw.smoothingTimeConstant = 0.2;
+    const anVoice = actx.createAnalyser(); anVoice.fftSize = 2048; anVoice.smoothingTimeConstant = 0.2;
+    src.connect(anRaw);
+    src.connect(hp); hp.connect(lp); lp.connect(anVoice);
+    // 不接到 destination，避免回授嘯叫
+    const rawBuf = new Float32Array(anRaw.fftSize);
+    const voiceBuf = new Float32Array(anVoice.fftSize);
+    // 給 VoiceFilter 用的降採樣緩衝（約 16k 等效，加速自相關）
+    const workN = 1024;
+    const work = new Float32Array(workN);
+    const strength = $('#noiseFilter')?.value || 'std';
+    const tracker = VF().createTracker(strength);
+    mic = { stream, raf: 0, timer: 0, tracker, lastTs: 0 };
     $('#noiseBtn').textContent = '停止偵測';
-    const loop = () => {
-      an.getByteTimeDomainData(buf);
-      let sum = 0; for (const v of buf) { const x = (v - 128) / 128; sum += x * x; }
-      const rms = Math.sqrt(sum / buf.length), lvl = Math.max(0, Math.min(100, (20 * Math.log10(rms + 1e-6) + 60) * 100 / 60));
-      mic.smooth = mic.smooth * .85 + lvl * .15;
+    $('#noiseText').textContent = '偵測中…';
+
+    // 約 25 fps 分析，避免平板過熱；畫面用 rAF 更新
+    const analyse = () => {
+      if (!mic) return;
+      anRaw.getFloatTimeDomainData(rawBuf);
+      anVoice.getFloatTimeDomainData(voiceBuf);
+      // 從人聲帶訊號抽 1024 點（等間距）給分類器
+      const step = Math.max(1, Math.floor(voiceBuf.length / workN));
+      for (let i = 0, j = 0; i < workN; i++, j += step) work[i] = voiceBuf[j] || 0;
+      // 取樣率依抽樣後等效
+      const effSr = sr / step;
       const th = +$('#noiseThreshold').value;
-      $('#noiseBar').style.width = mic.smooth + '%';
-      mic.loud = mic.smooth > th ? mic.loud + 1 : Math.max(0, mic.loud - 2);
-      const [f, t] = mic.loud > 40 ? ['😣', '太吵了！請降低音量'] : mic.smooth > th * .8 ? ['😐', '有點吵喔'] : ['😊', '很安靜，很棒！'];
-      $('#noiseFace').textContent = f; $('#noiseText').textContent = t;
-      $('#noiseText').style.color = mic.loud > 40 ? 'var(--danger)' : '';
-      mic.raf = requestAnimationFrame(loop);
+      const st = tracker.process(work, effSr, Date.now(), th);
+      mic.last = st;
+      mic.timer = setTimeout(analyse, 40); // ~25 fps
     };
-    loop();
-  } catch (e) { toast('無法使用麥克風：請允許瀏覽器使用麥克風'); }
+    const paint = () => {
+      if (!mic) return;
+      const st = mic.last;
+      if (st) {
+        const use = (st.strength === 'off') ? st.rawLevel : st.voiceLevel;
+        $('#noiseBar').style.width = use + '%';
+        $('#noiseRaw').textContent = Math.round(st.rawLevel);
+        $('#noiseVoice').textContent = Math.round(st.voiceLevel);
+        const ig = $('#noiseIgnore');
+        if (ig) {
+          if (st.ignore) { ig.textContent = '已忽略：' + st.ignore; ig.style.display = ''; }
+          else if (st.calibrating) { ig.textContent = '安靜校正中…'; ig.style.display = ''; }
+          else { ig.style.display = 'none'; }
+        }
+        const [f, t] = st.loud > 40 ? ['😣', '太吵了！請降低音量']
+          : use > (+$('#noiseThreshold').value) * .8 ? ['😐', '有點吵喔']
+          : ['😊', '很安靜，很棒！'];
+        $('#noiseFace').textContent = f;
+        $('#noiseText').textContent = st.calibrating ? '安靜校正中，請保持安靜…' : t;
+        $('#noiseText').style.color = st.loud > 40 ? 'var(--danger)' : '';
+      }
+      mic.raf = requestAnimationFrame(paint);
+    };
+    analyse();
+    paint();
+  } catch (e) {
+    console.warn(e);
+    toast('無法使用麥克風：請允許瀏覽器使用麥克風');
+  }
 };
 
 /* ---------------- 全班夥伴 ---------------- */
@@ -1725,6 +1795,8 @@ if (!state.settings.setupDone) openSetup();
 // 測試用 hook（正式畫面不依賴）
 if (typeof globalThis !== 'undefined') {
   globalThis.__jlTest = {
+    VoiceFilter: window.VoiceFilter,
+    
     buildAnnParts, buildHwAnnParts, migrateTaskAnnounce, migrateHomework,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
     setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
