@@ -67,10 +67,10 @@ function defaults() {
     contact: {},
     countdowns: [],
     taskDefs: [
-      { id: 't1', name: '繳交作業' },
-      { id: 't2', name: '訂正完成' },
-      { id: 't3', name: '打掃完成' },
-      { id: 't4', name: '放學整理' }
+      { id: 't1', name: '繳交作業', announce: false },
+      { id: 't2', name: '訂正完成', announce: true },
+      { id: 't3', name: '打掃完成', announce: false },
+      { id: 't4', name: '放學整理', announce: false }
     ],
     done: {},
     students: {},
@@ -89,8 +89,16 @@ function load() {
     // 舊版把「115學年度第一學期」整串放在學年度，拆成學年度＋學期
     const m = String(s.settings?.schoolYear || '').match(/(\d+)\s*學年度?\s*(?:第\s*([一二12])\s*學期)?/);
     if (m && s.settings) { s.settings.schoolYear = m[1]; if (m[2] && !s.settings.semester) s.settings.semester = { 1: '一', 2: '二' }[m[2]] || m[2]; }
-    return { ...d, ...s, settings: { ...d.settings, ...s.settings, loc: { ...d.settings.loc, ...(s.settings?.loc || {}) } }, ui: { ...d.ui, ...s.ui }, forest: { ...d.forest, ...s.forest } };
+    const merged = { ...d, ...s, settings: { ...d.settings, ...s.settings, loc: { ...d.settings.loc, ...(s.settings?.loc || {}) } }, ui: { ...d.ui, ...s.ui }, forest: { ...d.forest, ...s.forest } };
+    migrateTaskAnnounce(merged);
+    return merged;
   } catch (e) { console.warn(e); return defaults(); }
+}
+// 舊資料沒有 announce 欄位時：名稱含「訂正」的任務預設顯示在公告，其餘不顯示
+function migrateTaskAnnounce(st) {
+  if (!Array.isArray(st.taskDefs) || !st.taskDefs.length) return;
+  if (st.taskDefs.some(t => 'announce' in t)) return;
+  st.taskDefs.forEach(t => { t.announce = /訂正/.test(String(t.name || '')); });
 }
 let state = load();
 let saveTimer;
@@ -150,18 +158,38 @@ function bindTabs(group, onChange) {
 }
 
 /* ---------------- 頂部 ---------------- */
+// 組成跑馬燈片段：老師公告 + 勾選「顯示在公告」且今天尚未完成的任務（不寫入 settings.announcement）
+function buildAnnParts(announcement, taskDefs, seats, doneRec) {
+  const ann = (announcement || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const auto = [];
+  if (seats.length) {
+    (taskDefs || []).forEach(t => {
+      if (!t.announce) return;
+      const done = new Set(doneRec[t.id] || []);
+      const miss = seats.filter(n => !done.has(n));
+      if (!miss.length) return;
+      auto.push(`📝 ${t.name}尚未完成：${miss.map(n => pad(n)).join('、')}`);
+    });
+  }
+  return [...ann, ...auto];
+}
 function renderHeader() {
   const s = state.settings;
   const term = termText();
   $('#schoolName').textContent = s.school + (term ? `　${term}` : '');
   $('#className').textContent = s.className;
   document.title = `${s.className}｜班級儀表板`;
-  const ann = (s.announcement || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-  const annEl = $('#annText');
-  annEl.textContent = ann.length ? ann.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
-  annEl.classList.toggle('placeholder', !ann.length);
-  annEl.style.animationDuration = Math.max(14, annEl.textContent.length * .45) + 's';
   const seats = activeSeats();
+  // 自動帶出尚未完成的座號；全班完成或無人座號時不顯示該則
+  const parts = buildAnnParts(s.announcement, state.taskDefs, seats, todayDone());
+  const text = parts.length ? parts.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
+  const annEl = $('#annText');
+  // 文字沒變就別動 textContent，避免跑馬燈動畫每秒重來
+  if (annEl.textContent !== text) {
+    annEl.textContent = text;
+    annEl.style.animationDuration = Math.max(14, text.length * .45) + 's';
+  }
+  annEl.classList.toggle('placeholder', !parts.length);
   $('#statCoins').textContent = seats.reduce((a, n) => a + (state.students[n]?.coins || 0), 0);
   $('#statEnergy').textContent = todayRate() + '%';
   $('#statDex').textContent = `${classSpecies().size}/${SP.length}`;
@@ -1223,19 +1251,29 @@ function ctTimetable(el) {
 }
 
 function ctTasks(el) {
-  let rows = state.taskDefs.map(t => ({ ...t }));
+  let rows = state.taskDefs.map(t => ({ ...t, announce: !!t.announce }));
   const draw = () => {
-    $('#tkRows').innerHTML = rows.map((t, i) => `<div class="er task" data-i="${i}"><input value="${esc(t.name)}" placeholder="任務名稱"><button data-del="${i}">✕</button></div>`).join('');
+    $('#tkRows').innerHTML = rows.map((t, i) => `<div class="er task" data-i="${i}">
+      <input value="${esc(t.name)}" placeholder="任務名稱" data-k="name">
+      <label class="ann-chk" title="今天還沒打卡的座號會自動出現在左上角跑馬燈"><input type="checkbox" data-k="announce"${t.announce ? ' checked' : ''}>顯示在公告</label>
+      <button data-del="${i}">✕</button></div>`).join('');
   };
   el.innerHTML = `<p class="sub">每天都會出現的打卡任務。學生每完成一項 +1 金幣、班級山林 +1。（刪除任務不會影響已得到的金幣）</p>
+    <p class="sub">勾選「顯示在公告」後，該任務今天尚未完成的座號會自動出現在左上角跑馬燈；全班完成就會自動消失，不用手動輸入。</p>
     <div class="edit-rows" id="tkRows"></div>
     <div class="modal-actions" style="justify-content:space-between"><button class="btn" id="tkAdd">＋ 新增任務</button><button class="primary" id="tkSave">儲存</button></div>`;
   draw();
-  const sync = () => $$('#tkRows .er').forEach(er => rows[er.dataset.i].name = $('input', er).value);
+  const sync = () => $$('#tkRows .er').forEach(er => {
+    const i = +er.dataset.i;
+    rows[i].name = $('input[data-k="name"]', er).value;
+    rows[i].announce = !!$('input[data-k="announce"]', er)?.checked;
+  });
   $('#tkRows').onclick = e => { const d = e.target.closest('[data-del]'); if (d) { sync(); rows.splice(+d.dataset.del, 1); draw(); } };
-  $('#tkAdd').onclick = () => { sync(); rows.push({ id: 't' + uid(), name: '' }); draw(); };
+  $('#tkAdd').onclick = () => { sync(); rows.push({ id: 't' + uid(), name: '', announce: false }); draw(); };
   $('#tkSave').onclick = () => {
-    sync(); state.taskDefs = rows.filter(t => t.name.trim()).map(t => ({ id: t.id, name: t.name.trim() }));
+    sync();
+    // 保留 announce，避免舊版只存 {id,name} 把欄位洗掉
+    state.taskDefs = rows.filter(t => t.name.trim()).map(t => ({ id: t.id, name: t.name.trim(), announce: !!t.announce }));
     save(); renderAll(); toast('✅ 任務已儲存'); draw();
   };
 }
@@ -1309,6 +1347,7 @@ function ctData(el) {
         if (!d.settings || !d.students) throw new Error('格式不符');
         if (!confirm(`要用備份檔「${f.name}」取代目前全部資料嗎？`)) return;
         state = { ...defaults(), ...d, settings: { ...defaults().settings, ...d.settings } };
+        migrateTaskAnnounce(state);
         setAuth();
         save(); renderAll(); loadWeather(); toast('✅ 已匯入備份'); openConsole('data');
       } catch (err) { toast('❌ 這不是正確的備份檔'); }
@@ -1372,4 +1411,8 @@ tick();
 setInterval(tick, 1000);
 loadWeather();
 if (!state.settings.setupDone) openSetup();
+// 測試用 hook（正式畫面不依賴）
+if (typeof globalThis !== 'undefined') {
+  globalThis.__jlTest = { buildAnnParts, migrateTaskAnnounce, pad, dateKey };
+}
 })();

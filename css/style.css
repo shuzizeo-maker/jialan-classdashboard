@@ -332,7 +332,9 @@ body.clean #app { display: none; }
 .names-grid label.vacant { opacity: .4; }
 .edit-rows { display: flex; flex-direction: column; gap: 6px; max-height: 48vh; overflow: auto; margin-bottom: 10px; }
 .edit-rows .er { display: grid; grid-template-columns: 110px 110px 1fr 36px; gap: 6px; }
-.edit-rows .er.task { grid-template-columns: 1fr 36px; }
+.edit-rows .er.task { grid-template-columns: 1fr auto 36px; align-items: center; }
+.edit-rows .er.task label.ann-chk { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
+.edit-rows .er.task label.ann-chk input { width: auto; accent-color: var(--accent); }
 #schRows .er, .er.er-head { grid-template-columns: 100px 100px 1fr 96px 36px; }
 .er.er-head { display: grid; gap: 6px; font-size: 12px; color: var(--muted); padding: 0 2px 4px; }
 .edit-rows .er select { background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 8px; padding: 6px; min-width: 0; }
@@ -405,6 +407,8 @@ body.clean #app { display: none; }
   .row2, .row3 { grid-template-columns: 1fr; }
   .seat-presets { grid-template-columns: repeat(4, 1fr); }
   .edit-rows .er { grid-template-columns: 1fr 1fr; }
+  .edit-rows .er.task { grid-template-columns: 1fr 36px; }
+  .edit-rows .er.task label.ann-chk { grid-column: 1 / -1; }
   .edit-rows .er input:nth-child(3) { grid-column: 1 / 2; }
   .bottomnav button { padding: 6px 8px; }
 }
