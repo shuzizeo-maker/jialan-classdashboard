@@ -168,7 +168,9 @@ function buildAnnParts(announcement, taskDefs, seats, doneRec) {
       const done = new Set(doneRec[t.id] || []);
       const miss = seats.filter(n => !done.has(n));
       if (!miss.length) return;
-      auto.push(`📝 ${t.name}尚未完成：${miss.map(n => pad(n)).join('、')}`);
+      // 公告用語：「尚未」+ 任務名稱，名稱結尾的「完成」去掉（訂正完成 → 尚未訂正）
+      const label = t.name.replace(/完成$/, '').trim() || t.name;
+      auto.push(`📝 尚未${label}：${miss.map(n => pad(n)).join('、')}`);
     });
   }
   return [...ann, ...auto];
