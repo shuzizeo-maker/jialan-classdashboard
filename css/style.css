@@ -631,3 +631,7 @@ body[data-theme="dawn"] {
   --theme-bg-opacity: .42;
   background: #2a1c10;
 }
+
+/* 修正：調色盤被下方面板蓋住 → 讓頂部整列浮在最上層 */
+.topbar { position: relative; z-index: 60; }
+.theme-pop { max-height: 70vh; overflow: auto; }
