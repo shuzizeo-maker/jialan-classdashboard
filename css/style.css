@@ -647,3 +647,11 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
 .ann-size { flex: none; border: 0; border-radius: 50%; background: rgba(255,255,255,.12); color: #fff; font-weight: 900; font-size: 18px; line-height: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .ann-size small { font-size: 10px; font-weight: 700; opacity: .8; }
 .ann-size:hover { background: var(--accent-2); }
+
+/* 公告高亮色：深色背景上用螢光色＋發光陰影，遠處也醒目 */
+.marquee span b { font-weight: 900; }
+.marquee .ann-note { color: #fff35c; text-shadow: 0 0 10px rgba(255,243,92,.55), 0 2px 4px rgba(0,0,0,.7); }
+.marquee .ann-miss { color: #ff6fa5; text-shadow: 0 0 10px rgba(255,111,165,.55), 0 2px 4px rgba(0,0,0,.7); }
+.marquee .ann-fix  { color: #ffae42; text-shadow: 0 0 10px rgba(255,174,66,.55), 0 2px 4px rgba(0,0,0,.7); }
+.marquee .ann-task { color: #5ff5ff; text-shadow: 0 0 10px rgba(95,245,255,.55), 0 2px 4px rgba(0,0,0,.7); }
+.marquee .ann-sep  { font-style: normal; color: rgba(255,255,255,.55); text-shadow: none; }

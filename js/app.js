@@ -496,9 +496,16 @@ function renderHeader() {
   const parts = buildAnnParts(s.announcement, state.taskDefs, seats, todayDone(), state.homework);
   const text = parts.length ? parts.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
   const annEl = $('#annText');
-  // 文字沒變就別動 textContent，避免跑馬燈動畫每秒重來
-  if (annEl.textContent !== text) {
-    annEl.textContent = text;
+  // 文字沒變就別重畫，避免跑馬燈動畫每秒重來
+  if (annEl.dataset.key !== text) {
+    annEl.dataset.key = text;
+    if (parts.length) {
+      // 依公告類型上高亮色：老師公告＝螢光黃、未繳＝亮粉紅、待訂正＝亮橘、每日任務未完成＝亮青
+      annEl.innerHTML = parts.map(p => {
+        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : 'ann-note';
+        return `<b class="${c}">${esc(p)}</b>`;
+      }).join('<i class="ann-sep">　　★　　</i>');
+    } else annEl.textContent = text;
     setMarqueeSpeed();
   }
   annEl.classList.toggle('placeholder', !parts.length);
