@@ -457,6 +457,35 @@ function buildAnnParts(announcement, taskDefs, seats, doneRec, homework) {
   auto.push(...buildHwAnnParts(homework || [], seats));
   return [...ann, ...auto];
 }
+// 跑馬燈速度依「實際像素寬度」計算：字變大時不會跟著變快，維持約每秒 4 個字的閱讀速度
+function setMarqueeSpeed() {
+  const annEl = $('#annText'); if (!annEl) return;
+  const fs = parseFloat(getComputedStyle(annEl).fontSize) || 38;
+  const dist = annEl.offsetWidth || (annEl.textContent.length * fs);
+  const dur = Math.min(240, Math.max(12, dist / (fs * 4)));
+  annEl.style.animationDuration = dur + 's';
+}
+// 公告字級：中 m／大 l／特大 xl，存在 localStorage
+const ANN_SIZES = [['m', '中'], ['l', '大'], ['xl', '特大']];
+function applyAnnSize(k) {
+  if (!ANN_SIZES.some(a => a[0] === k)) k = 'l';
+  document.body.dataset.annSize = k;
+  try { localStorage.setItem('jialan-ann-size', k); } catch (e) {}
+  const lbl = $('#annSizeLbl'); if (lbl) lbl.textContent = ANN_SIZES.find(a => a[0] === k)[1];
+  requestAnimationFrame(setMarqueeSpeed);
+}
+function initAnnSize() {
+  let k = 'l'; try { k = localStorage.getItem('jialan-ann-size') || 'l'; } catch (e) {}
+  applyAnnSize(k);
+  const btn = $('#annSize');
+  if (btn) btn.onclick = e => {
+    e.stopPropagation(); // 不要觸發公告編輯
+    const i = ANN_SIZES.findIndex(a => a[0] === document.body.dataset.annSize);
+    applyAnnSize(ANN_SIZES[(i + 1) % ANN_SIZES.length][0]);
+  };
+  window.addEventListener('resize', () => setMarqueeSpeed());
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAnnSize); else initAnnSize();
 function renderHeader() {
   const s = state.settings;
   const term = termText();
@@ -470,9 +499,7 @@ function renderHeader() {
   // 文字沒變就別動 textContent，避免跑馬燈動畫每秒重來
   if (annEl.textContent !== text) {
     annEl.textContent = text;
-    // 長度決定速度；過長時設上限，避免跑馬燈慢到不像在動
-    const dur = Math.min(90, Math.max(14, text.length * .45));
-    annEl.style.animationDuration = dur + 's';
+    setMarqueeSpeed();
   }
   annEl.classList.toggle('placeholder', !parts.length);
   $('#statCoins').textContent = seats.reduce((a, n) => a + (state.students[n]?.coins || 0), 0);
