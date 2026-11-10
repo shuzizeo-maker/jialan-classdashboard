@@ -80,7 +80,6 @@ body.dusk  { --m1: #8a7aa0; --m1s: #7c6d92; --m2: #5c5f78; --m2s: #52556c; --m3:
 .topbar { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-areas: ". brand stats" "ann ann ann"; gap: 10px 16px; align-items: center; }
 .topbar .brand { grid-area: brand; position: relative; }
 /* 校徽掛在校名左側、不佔排版寬度，讓校名文字真正置中 */
-.topbar .brand .school-logo { position: absolute; right: calc(100% + 14px); top: 50%; transform: translateY(-50%); }
 .topbar .stats { grid-area: stats; }
 .topbar .announce { grid-area: ann; }
 .announce { display: flex; align-items: center; gap: 10px; padding: 10px 14px; overflow: hidden; min-width: 0; }
@@ -94,7 +93,7 @@ body.dusk  { --m1: #8a7aa0; --m1s: #7c6d92; --m2: #5c5f78; --m2s: #52556c; --m3:
 .announce:hover .ann-edit { background: var(--accent-2); color: #fff; }
 .w-src { font-size: 11px; color: var(--muted); margin-top: 6px; opacity: .8; }
 .brand { display: flex; align-items: center; justify-content: center; gap: 12px; text-align: center; text-shadow: 0 2px 12px rgba(0,0,0,.45); }
-.brand .school-logo {
+.topbar .school-logo {
   width: clamp(48px, 6vw, 72px); height: clamp(48px, 6vw, 72px);
   border-radius: 50%; object-fit: cover; flex: none;
   background: radial-gradient(circle at 40% 35%, #fff 0%, #f3f7f4 55%, rgba(255,255,255,.55) 70%, transparent 72%);
@@ -405,7 +404,6 @@ body.clean #app { display: none; }
   body { overflow: auto; }
   #app { height: auto; min-height: 100vh; }
   .topbar { grid-template-columns: 1fr; grid-template-areas: "brand" "stats" "ann"; }
-  .topbar .brand .school-logo { position: static; transform: none; }  /* 窄螢幕：校徽回到校名旁邊 */
   .brand { order: -1; }
   .stats { justify-self: stretch; flex-wrap: wrap; justify-content: center; }
   #pages { min-height: 70vh; }
@@ -655,3 +653,15 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
 .marquee .ann-fix  { color: #ffae42; text-shadow: 0 0 10px rgba(255,174,66,.55), 0 2px 4px rgba(0,0,0,.7); }
 .marquee .ann-task { color: #5ff5ff; text-shadow: 0 0 10px rgba(95,245,255,.55), 0 2px 4px rgba(0,0,0,.7); }
 .marquee .ann-sep  { font-style: normal; color: rgba(255,255,255,.55); text-shadow: none; }
+
+/* 校徽放最左上角；校名、班級加大（教室電視遠看也清楚） */
+.topbar { grid-template-areas: "logo brand stats" "ann ann ann"; }
+.topbar .school-logo { grid-area: logo; justify-self: start; width: clamp(72px, 7vw, 112px); height: clamp(72px, 7vw, 112px); }
+.brand .school { font-size: clamp(18px, 1.5vw, 26px); letter-spacing: .16em; }
+.brand h1 { font-size: clamp(40px, 4.4vw, 72px); letter-spacing: .14em; line-height: 1.1; }
+@media (max-width: 1100px) {
+  .topbar { grid-template-columns: auto 1fr; grid-template-areas: "logo brand" "stats stats" "ann ann"; }
+  .topbar .school-logo { width: 64px; height: 64px; }
+  .brand .school { font-size: 15px; }
+  .brand h1 { font-size: 32px; }
+}
