@@ -683,3 +683,11 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
 
 /* 版本號小膠囊 */
 .bottomnav .app-ver { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 99px; font-size: 11px; font-weight: 700; color: #fff; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.25); vertical-align: 1px; }
+
+/* v1.5.1 自製確認視窗＋自訂任務捷徑 */
+.ask-confirm { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.45); padding: 16px; }
+.ask-card { max-width: 440px; width: 100%; padding: 22px; border-radius: 18px; background: rgba(30,30,50,.92); color: #fff; box-shadow: 0 10px 40px rgba(0,0,0,.4); }
+.ask-msg { white-space: pre-line; line-height: 1.7; margin: 0 0 18px; font-size: 1.05rem; }
+.ask-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.ask-actions button { min-width: 96px; padding: 10px 16px; font-size: 1rem; }
+.all-done-btns { display: flex; gap: 8px; flex-wrap: wrap; }

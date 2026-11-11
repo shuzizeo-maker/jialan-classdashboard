@@ -429,6 +429,27 @@ const classSpecies = () => {
   return set;
 };
 
+// 自製確認視窗：不用瀏覽器 confirm()，避免被嵌入框架（如 Google 協作平台）或瀏覽器擋掉
+function askConfirm(msg, okText = '確定') {
+  return new Promise(resolve => {
+    let ov = document.getElementById('askConfirm');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'askConfirm';
+      ov.className = 'ask-confirm';
+      ov.innerHTML = '<div class="ask-card glass"><p class="ask-msg"></p><div class="ask-actions"><button type="button" class="btn ask-no">取消</button><button type="button" class="primary ask-yes"></button></div></div>';
+      document.body.appendChild(ov);
+    }
+    ov.querySelector('.ask-msg').textContent = msg;
+    ov.querySelector('.ask-yes').textContent = okText;
+    ov.style.display = 'flex';
+    const done = v => { ov.style.display = 'none'; ov.onclick = null; resolve(v); };
+    ov.onclick = e => {
+      if (e.target.closest('.ask-yes')) done(true);
+      else if (e.target.closest('.ask-no') || e.target === ov) done(false);
+    };
+  });
+}
 function toast(msg, ms = 2200) {
   const t = $('#toast');
   t.textContent = msg; t.classList.remove('hidden');
@@ -1096,7 +1117,7 @@ function renderDailyTaskPanel() {
   $('#taskTabs').innerHTML = state.taskDefs.map(t => {
     const c = (rec[t.id] || []).filter(s => seats.includes(s)).length;
     return `<button data-id="${t.id}" class="${t.id === state.ui.pageTask ? 'active' : ''}">${esc(t.name)}<em>${c}/${seats.length}</em></button>`;
-  }).join('') || '<span class="hint">請到教師控制台新增任務</span>';
+  }).join('') || '<span class="hint">還沒有任務，按右邊「⚙️ 自訂任務」新增</span>';
   const done = new Set(rec[state.ui.pageTask] || []);
   const allBtn = $('#taskAllDone');
   if (allBtn) {
@@ -1183,10 +1204,12 @@ document.addEventListener('click', e => {
   if (skip) {
     const h = state.homework.find(x => x.id === skip.dataset.skip);
     if (!h) return;
-    if (!confirm(`確定「${h.title}」不需檢查？\n（可在已略過項目中復原；不會刪除聯絡簿內容）`)) return;
-    h.skipped = true;
-    save(); renderTasksPage(); renderTaskWidget(); renderHeader();
-    toast('已標示為不需檢查');
+    askConfirm(`確定「${h.title}」不需檢查？\n（可在已略過項目中復原；不會刪除聯絡簿內容）`, '不需檢查').then(ok => {
+      if (!ok) return;
+      h.skipped = true;
+      save(); renderTasksPage(); renderTaskWidget(); renderHeader();
+      toast('已標示為不需檢查');
+    });
     return;
   }
   const allHw = e.target.closest('[data-hw-all]');
@@ -1195,11 +1218,14 @@ document.addEventListener('click', e => {
     if (!h) return;
     const seats = activeSeats();
     const c = hwCounts(h, seats);
-    if (!confirm(`「${h.title}」全班都完成了嗎？\n\n會把 沒交 ${c.miss} 人、要訂正 ${c.fix} 人 一起改成「完成」，每人 +1 金幣。`)) return;
-    const n = markHwAllDone(h, seats);
-    save(); renderTasksPage(); renderTaskWidget(); renderHeader();
-    toast(`🎉 「${h.title}」全班完成！（${n} 人 +1 金幣）`, 3500);
-    try { ensureAudio(); chime(); } catch (_) {}
+    if (!c.miss && !c.fix) { toast('這份作業全班都已經完成囉'); return; }
+    askConfirm(`「${h.title}」全班都完成了嗎？\n\n會把 沒交 ${c.miss} 人、要訂正 ${c.fix} 人 一起改成「完成」，每人 +1 金幣。`, '✅ 全班完成').then(ok => {
+      if (!ok) return;
+      const n = markHwAllDone(h, seats);
+      save(); renderTasksPage(); renderTaskWidget(); renderHeader();
+      toast(`🎉 「${h.title}」全班完成！（${n} 人 +1 金幣）`, 3500);
+      try { ensureAudio(); chime(); } catch (_) {}
+    });
     return;
   }
   if (e.target.closest('#taskAllDone')) {
@@ -1209,13 +1235,16 @@ document.addEventListener('click', e => {
     const rec = todayDone();
     const left = seats.filter(s => !(rec[tid] || []).includes(s));
     if (!left.length) return;
-    if (!confirm(`「${t?.name || ''}」今天全班都完成了嗎？\n\n會幫 ${left.map(pad).join('、')} 號（共 ${left.length} 人）打卡，每人 +1 金幣。`)) return;
-    const n = markTaskAllDone(rec, tid, seats, t?.name || '');
-    save(); renderDailyTaskPanel(); renderTaskWidget(); renderHeader();
-    toast(`🎉 「${t?.name || ''}」全班完成！（${n} 人 +1 金幣）`, 3500);
-    try { ensureAudio(); chime(); } catch (_) {}
+    askConfirm(`「${t?.name || ''}」今天全班都完成了嗎？\n\n會幫 ${left.map(pad).join('、')} 號（共 ${left.length} 人）打卡，每人 +1 金幣。`, '✅ 全班完成').then(ok => {
+      if (!ok) return;
+      const n = markTaskAllDone(rec, tid, seats, t?.name || '');
+      save(); renderDailyTaskPanel(); renderTaskWidget(); renderHeader();
+      toast(`🎉 「${t?.name || ''}」全班完成！（${n} 人 +1 金幣）`, 3500);
+      try { ensureAudio(); chime(); } catch (_) {}
+    });
     return;
   }
+  if (e.target.closest('#taskManage')) { teacherOpen('tasks'); return; }
   if (e.target.closest('#hwAddBtn')) {
     openHwAddModal();
     return;
@@ -2255,7 +2284,7 @@ if (!state.settings.setupDone) openSetup();
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.5.1';
 const APP_UPDATED = '2026-11-11';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -2270,7 +2299,7 @@ if (typeof globalThis !== 'undefined') {
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,
     
-    APP_VERSION, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    APP_VERSION, askConfirm, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
     setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
     getState: () => state, setState: (s) => { state = s; }
