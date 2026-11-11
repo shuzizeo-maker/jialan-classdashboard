@@ -241,6 +241,19 @@ function ensureWeekDraft(anchor) {
   weekDraft = { anchor: new Date(anchor), lines };
   return weekDraft;
 }
+// 把草稿的週一～週五依序對應到下一週的週一～週五
+function copyWeekLines(draft) {
+  const src = weekdaysOf(draft.anchor);
+  const a = new Date(draft.anchor); a.setDate(a.getDate() + 7);
+  const dst = weekdaysOf(a);
+  const lines = {}; let total = 0;
+  src.forEach((dk, i) => {
+    const ls = (draft.lines[dk] || []).map(x => String(x || '').trim()).filter(Boolean);
+    total += ls.length;
+    lines[dst[i]] = ls.length ? ls : [''];
+  });
+  return { lines, total };
+}
 function readWeekGridFromDom() {
   if (!weekDraft) return;
   $$('#weekGrid .week-day').forEach(col => {
@@ -1204,6 +1217,20 @@ document.addEventListener('click', e => {
   if (e.target.closest('#weekThis')) {
     readWeekGridFromDom();
     ensureWeekDraft(new Date()); renderWeekPlanner(); return;
+  }
+  // 複製本週 → 下一週（週一對週一…），跳到下一週讓老師改頁數後再儲存
+  if (e.target.closest('#weekCopyNext')) {
+    readWeekGridFromDom();
+    const plan = copyWeekLines(weekDraft);
+    if (!plan.total) return toast('這一週還沒有作業可以複製');
+    const a = new Date(weekDraft.anchor); a.setDate(a.getDate() + 7);
+    const next = ensureWeekDraft(a);
+    const hasOld = Object.values(next.lines).some(ls => ls.some(x => x.trim()));
+    if (hasOld && !confirm('下一週已經有作業了，要用這一週的內容覆蓋嗎？\n（按「取消」則不複製）')) { renderWeekPlanner(); return; }
+    Object.assign(next.lines, plan.lines);
+    renderWeekPlanner();
+    toast(`⏭️ 已複製 ${plan.total} 項到下一週，改好頁數再按「💾 儲存一週作業」`, 4000);
+    return;
   }
   if (e.target.closest('#weekApplyAll')) {
     readWeekGridFromDom();
@@ -2177,7 +2204,7 @@ if (!state.settings.setupDone) openSetup();
 // 測試用 hook（正式畫面不依賴）
 if (typeof globalThis !== 'undefined') {
   globalThis.__jlTest = {
-    goto, renderWeekPlanner, renderTasksPage, weekdaysOf, weekRangeLabel, ensureWeekDraft, applyWeekPlan, applyTheme, THEMES,
+    goto, renderWeekPlanner, renderTasksPage, weekdaysOf, weekRangeLabel, ensureWeekDraft, copyWeekLines, applyWeekPlan, applyTheme, THEMES,
     getWeekDraft: () => weekDraft,
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,

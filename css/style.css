@@ -668,3 +668,9 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
 
 /* 倒數日公告：亮紫 */
 .marquee .ann-cd { color: #d9a6ff; text-shadow: 0 0 10px rgba(217,166,255,.6), 0 2px 4px rgba(0,0,0,.7); }
+
+/* 版權文字：底部導覽列中間，低調不搶戲 */
+.bottomnav .copyright { font-size: 13px; color: var(--muted); opacity: .75; letter-spacing: .05em; white-space: nowrap; padding: 0 12px; user-select: none; }
+@media (max-width: 1100px) {
+  .bottomnav .copyright { order: 99; width: 100%; text-align: center; padding: 4px 0 0; font-size: 12px; }
+}
