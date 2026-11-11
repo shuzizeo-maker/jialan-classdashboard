@@ -665,3 +665,6 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
   .brand .school { font-size: 15px; }
   .brand h1 { font-size: 32px; }
 }
+
+/* 倒數日公告：亮紫 */
+.marquee .ann-cd { color: #d9a6ff; text-shadow: 0 0 10px rgba(217,166,255,.6), 0 2px 4px rgba(0,0,0,.7); }

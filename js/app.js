@@ -55,7 +55,7 @@ function defaults() {
       schoolYear: '',
       semester: '',
       studentEdit: false,
-      announcement: '歡迎蒞臨臺東縣金峰鄉嘉蘭國民小學',
+      announcement: '歡迎蒞臨臺東縣金峰鄉嘉蘭國民小學六年甲班',
       theme: 'default',
       maxSeat: 20,
       vacant: [],
@@ -439,8 +439,22 @@ function bindTabs(group, onChange) {
 
 /* ---------------- 頂部 ---------------- */
 // 組成跑馬燈片段：老師公告 + 每日任務自動則 + 作業未繳／待訂正（不寫入 settings.announcement）
-function buildAnnParts(announcement, taskDefs, seats, doneRec, homework) {
+// 歡迎詞裡出現校名、但後面沒接班級時，自動補上班級（例：嘉蘭國民小學 → 嘉蘭國民小學六年甲班）
+function withClassName(text, school, className) {
+  if (!text || !school || !className) return text || '';
+  const segs = text.split(school);
+  return segs.reduce((acc, seg, i) => i === 0 ? seg : acc + school + (seg.trimStart().startsWith(className) ? '' : className) + seg, '');
+}
+// 倒數日 → 跑馬燈：取最近 3 個還沒過的事件
+function buildCountdownParts(countdowns, max = 3) {
+  return (countdowns || []).filter(c => c && c.name && c.date)
+    .map(c => ({ c, d: daysUntil(c.date) })).filter(x => x.d >= 0)
+    .sort((a, b) => a.d - b.d).slice(0, max)
+    .map(({ c, d }) => d === 0 ? `⏳ 今天就是${c.name}！` : `⏳ 距離${c.name}還有 ${d} 天`);
+}
+function buildAnnParts(announcement, taskDefs, seats, doneRec, homework, countdowns) {
   const ann = (announcement || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  ann.push(...buildCountdownParts(countdowns));
   const auto = [];
   if (seats.length) {
     (taskDefs || []).forEach(t => {
@@ -493,7 +507,7 @@ function renderHeader() {
   $('#className').textContent = s.className;
   document.title = `${s.className}｜班級儀表板`;
   const seats = activeSeats();
-  const parts = buildAnnParts(s.announcement, state.taskDefs, seats, todayDone(), state.homework);
+  const parts = buildAnnParts(withClassName(s.announcement, s.school, s.className), state.taskDefs, seats, todayDone(), state.homework, state.countdowns);
   const text = parts.length ? parts.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
   const annEl = $('#annText');
   // 文字沒變就別重畫，避免跑馬燈動畫每秒重來
@@ -502,7 +516,7 @@ function renderHeader() {
     if (parts.length) {
       // 依公告類型上高亮色：老師公告＝螢光黃、未繳＝亮粉紅、待訂正＝亮橘、每日任務未完成＝亮青
       annEl.innerHTML = parts.map(p => {
-        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : 'ann-note';
+        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : p.startsWith('⏳') ? 'ann-cd' : 'ann-note';
         return `<b class="${c}">${esc(p)}</b>`;
       }).join('<i class="ann-sep">　　★　　</i>');
     } else annEl.textContent = text;
@@ -672,13 +686,13 @@ $('#cdForm').addEventListener('submit', e => {
   if (!canEditBoard()) return;
   state.countdowns.push({ id: uid(), name: $('#cdName').value.trim(), date: $('#cdDate').value });
   $('#cdName').value = ''; $('#cdDate').value = '';
-  save(); renderCountdowns();
+  save(); renderCountdowns(); renderHeader();
 });
 $('#cdList').addEventListener('click', e => {
   const b = e.target.closest('.del'); if (!b || !canEditBoard()) return;
   if (!confirm('刪除這個倒數事件？')) return;
   state.countdowns = state.countdowns.filter(c => c.id !== b.dataset.id);
-  save(); renderCountdowns();
+  save(); renderCountdowns(); renderHeader();
 });
 
 /* ---------------- 天氣 ---------------- */
@@ -2168,7 +2182,7 @@ if (typeof globalThis !== 'undefined') {
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,
     
-    buildAnnParts, buildHwAnnParts, migrateTaskAnnounce, migrateHomework,
+    buildAnnParts, buildHwAnnParts, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
     setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
     getState: () => state, setState: (s) => { state = s; }
