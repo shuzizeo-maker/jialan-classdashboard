@@ -674,3 +674,12 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
 @media (max-width: 1100px) {
   .bottomnav .copyright { order: 99; width: 100%; text-align: center; padding: 4px 0 0; font-size: 12px; }
 }
+
+/* 一鍵全班完成 */
+.all-done-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.all-done-btn { background: linear-gradient(135deg, #3ecf8e, #1fa67a); color: #fff; border: 0; font-weight: 700; padding: 8px 16px; border-radius: 99px; cursor: pointer; box-shadow: 0 2px 8px rgba(31,166,122,.4); }
+.all-done-btn:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+.all-done-btn:disabled { opacity: .55; cursor: default; box-shadow: none; }
+
+/* 版本號小膠囊 */
+.bottomnav .app-ver { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 99px; font-size: 11px; font-weight: 700; color: #fff; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.25); vertical-align: 1px; }

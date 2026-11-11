@@ -370,6 +370,19 @@ function setHwStatus(h, seat, next) {
   if (next === 'miss') delete h.statuses[seat];
   else h.statuses[seat] = next;
 }
+// 一鍵全班完成：作業（沒交／要訂正 → 完成，各 +1 金幣），回傳這次改了幾位
+function markHwAllDone(h, seats) {
+  let n = 0;
+  seats.forEach(s => { if (hwStatusOf(h, s) !== 'done') { setHwStatus(h, s, 'done'); n++; } });
+  return n;
+}
+// 一鍵全班完成：每日任務（尚未打卡的人補上，各 +1 金幣），回傳這次補了幾位
+function markTaskAllDone(rec, tid, seats, taskName = '') {
+  const arr = (rec[tid] ||= []);
+  let n = 0;
+  seats.forEach(s => { if (!arr.includes(s)) { arr.push(s); addCoins(s, 1, '任務：' + taskName); n++; } });
+  return n;
+}
 function cycleHwSeat(h, seat) {
   const next = HW_CYCLE[hwStatusOf(h, seat)] || 'fix';
   setHwStatus(h, seat, next);
@@ -1085,6 +1098,13 @@ function renderDailyTaskPanel() {
     return `<button data-id="${t.id}" class="${t.id === state.ui.pageTask ? 'active' : ''}">${esc(t.name)}<em>${c}/${seats.length}</em></button>`;
   }).join('') || '<span class="hint">請到教師控制台新增任務</span>';
   const done = new Set(rec[state.ui.pageTask] || []);
+  const allBtn = $('#taskAllDone');
+  if (allBtn) {
+    const left = seats.filter(s => !done.has(s)).length;
+    allBtn.style.display = state.ui.pageTask && seats.length ? '' : 'none';
+    allBtn.disabled = !left;
+    allBtn.textContent = left ? `✅ 全班完成（補 ${left} 人）` : '🎉 全班已完成';
+  }
   $('#seatGrid').innerHTML = seats.map(s => `<button class="seat ${done.has(s) ? 'done' : ''}" data-seat="${s}"><b>${pad(s)}</b><small>${esc(nameOf(s)) || '&nbsp;'}</small></button>`).join('');
 }
 function renderHomeworkPanel() {
@@ -1130,6 +1150,7 @@ function hwCardHTML(h, seats) {
         <span class="hw-src">${h.source === 'manual' ? '補登' : '聯絡簿'}</span></div>
       <div class="hw-actions">
         <span class="hw-counts">沒交 ${c.miss}　要訂正 ${c.fix}　完成 ${c.done}</span>
+        <button class="btn all-done-btn" data-hw-all="${h.id}" title="檢查完全班都過關，一鍵標成完成">✅ 全班完成</button>
         <button class="btn hw-skip" data-skip="${h.id}" title="不當作業檢查（例如班級事項）">不需檢查</button>
       </div>
     </div>
@@ -1166,6 +1187,33 @@ document.addEventListener('click', e => {
     h.skipped = true;
     save(); renderTasksPage(); renderTaskWidget(); renderHeader();
     toast('已標示為不需檢查');
+    return;
+  }
+  const allHw = e.target.closest('[data-hw-all]');
+  if (allHw) {
+    const h = state.homework.find(x => x.id === allHw.dataset.hwAll);
+    if (!h) return;
+    const seats = activeSeats();
+    const c = hwCounts(h, seats);
+    if (!confirm(`「${h.title}」全班都完成了嗎？\n\n會把 沒交 ${c.miss} 人、要訂正 ${c.fix} 人 一起改成「完成」，每人 +1 金幣。`)) return;
+    const n = markHwAllDone(h, seats);
+    save(); renderTasksPage(); renderTaskWidget(); renderHeader();
+    toast(`🎉 「${h.title}」全班完成！（${n} 人 +1 金幣）`, 3500);
+    try { ensureAudio(); chime(); } catch (_) {}
+    return;
+  }
+  if (e.target.closest('#taskAllDone')) {
+    const tid = state.ui.pageTask; if (!tid) return;
+    const t = state.taskDefs.find(x => x.id === tid);
+    const seats = activeSeats();
+    const rec = todayDone();
+    const left = seats.filter(s => !(rec[tid] || []).includes(s));
+    if (!left.length) return;
+    if (!confirm(`「${t?.name || ''}」今天全班都完成了嗎？\n\n會幫 ${left.map(pad).join('、')} 號（共 ${left.length} 人）打卡，每人 +1 金幣。`)) return;
+    const n = markTaskAllDone(rec, tid, seats, t?.name || '');
+    save(); renderDailyTaskPanel(); renderTaskWidget(); renderHeader();
+    toast(`🎉 「${t?.name || ''}」全班完成！（${n} 人 +1 金幣）`, 3500);
+    try { ensureAudio(); chime(); } catch (_) {}
     return;
   }
   if (e.target.closest('#hwAddBtn')) {
@@ -2201,6 +2249,19 @@ tick();
 setInterval(tick, 1000);
 loadWeather();
 if (!state.settings.setupDone) openSetup();
+/* ---------------- 版本號 ----------------
+ * 每次更新改這裡：主版號.次版號.修正號
+ *   主版號：大改版（資料格式變動）
+ *   次版號：新增功能
+ *   修正號：小修正、調整外觀
+ */
+const APP_VERSION = '1.5.0';
+const APP_UPDATED = '2026-11-11';
+(function showVersion() {
+  const el = document.getElementById('appVer');
+  if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
+  console.info(`班級儀表板 v${APP_VERSION}（${APP_UPDATED}）`);
+})();
 // 測試用 hook（正式畫面不依賴）
 if (typeof globalThis !== 'undefined') {
   globalThis.__jlTest = {
@@ -2209,7 +2270,7 @@ if (typeof globalThis !== 'undefined') {
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,
     
-    buildAnnParts, buildHwAnnParts, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    APP_VERSION, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
     setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
     getState: () => state, setState: (s) => { state = s; }

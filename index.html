@@ -275,7 +275,10 @@
 
         <div id="dailyTaskPanel" style="display:none">
           <div class="task-tabs" id="taskTabs"></div>
-          <p class="hint">固定每日任務（打掃、放學整理等）。點座號打卡，每完成一項 <b>+1 金幣</b>；再點一次取消。</p>
+          <div class="all-done-row">
+            <p class="hint">固定每日任務（打掃、放學整理等）。點座號打卡，每完成一項 <b>+1 金幣</b>；再點一次取消。</p>
+            <button type="button" class="btn all-done-btn" id="taskAllDone" title="一鍵把這項任務標成全班完成">✅ 全班完成</button>
+          </div>
           <div class="seat-grid" id="seatGrid"></div>
         </div>
       </div>
@@ -334,7 +337,7 @@
     <button id="consoleBtn"><span>🔒</span>教師控制台</button>
     <span class="spacer"></span>
     <!-- 版權文字 -->
-    <span class="copyright">copyright@萬城老師&amp;AI協作</span>
+    <span class="copyright">copyright@萬城老師&amp;AI協作｜靈感來自Ray Chen老師<b class="app-ver" id="appVer"></b></span>
     <!-- 嘉報台（學校 Google 協作平台不允許 iframe 嵌入，所以用新分頁開啟） -->
     <button onclick="window.open('https://sites.google.com/ttct.edu.tw/jialan-weather/%E5%98%89%E5%A0%B1%E5%8F%B0','_blank')" title="開啟嘉報台氣象報告（新分頁）"><span>🌤️</span>氣象台</button>
     <button onclick="window.open('guide.html','_blank')" title="安裝與使用說明"><span>❓</span>說明</button>
