@@ -643,11 +643,11 @@ function renderSchedule() {
   if (cur) {
     const left = Math.max(0, toMin(cur.end) - now);
     box.innerHTML = `<div class="np-sub">現在是</div><div class="np-name">${periodHTML(cur)}</div>
-      <div class="np-sub">還有 ${Math.floor(left)} 分 ${pad(Math.floor((left % 1) * 60))} 秒${next ? `・下一個：${esc(periodLabel(next))}` : ''}</div>
+      <div class="np-sub">還有 ${Math.floor(left)} 分 ${pad(Math.floor((left % 1) * 60))} 秒${next ? `・下一節：${esc(periodLabel(next))}` : ''}</div>
       <div class="bar"><i style="width:${(now - toMin(cur.start)) / (toMin(cur.end) - toMin(cur.start)) * 100}%"></i></div>`;
   } else if (next) {
     const left = toMin(next.start) - now;
-    box.innerHTML = `<div class="np-sub">下課／休息中</div><div class="np-name">下一個：${periodHTML(next)}</div>
+    box.innerHTML = `<div class="np-sub">下課／休息中</div><div class="np-name">下一節：${periodHTML(next)}</div>
       <div class="np-sub">${next.start} 開始，還有 ${Math.ceil(left)} 分鐘</div>`;
   } else {
     box.innerHTML = `<div class="np-name">今天的課程結束了 🎒</div><div class="np-sub">路上小心，明天見！</div>`;
@@ -831,7 +831,7 @@ function tick() {
   updateLockUI();
   $('#wDate').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日　星期${WEEK[d.getDay()]}`;
   const cur = renderSchedule();
-  const sub = cur ? (toMin(cur.start) <= d.getHours() * 60 + d.getMinutes() ? `現在：${periodLabel(cur)}` : `下一個：${periodLabel(cur)}（${cur.start}）`) : `星期${WEEK[d.getDay()]}`;
+  const sub = cur ? (toMin(cur.start) <= d.getHours() * 60 + d.getMinutes() ? `現在：${periodLabel(cur)}` : `下一節：${periodLabel(cur)}（${cur.start}）`) : `星期${WEEK[d.getDay()]}`;
   $('#clockSub').textContent = sub;
   if (document.body.classList.contains('clean')) {
     $('#cleanClock').innerHTML = `<div class="cc-time">${hh}:${mm}</div><div class="cc-sub">${esc(state.settings.className)}・${esc(sub)}</div><div class="cc-hint">點一下畫面回到儀表板</div>`;
@@ -2284,8 +2284,8 @@ if (!state.settings.setupDone) openSetup();
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.5.1';
-const APP_UPDATED = '2026-11-11';
+const APP_VERSION = '1.5.2';
+const APP_UPDATED = '2026-11-12';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
