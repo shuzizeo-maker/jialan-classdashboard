@@ -65,6 +65,9 @@ function defaults() {
     },
     schedule: DEFAULT_SCHEDULE.map(r => ({ ...r })),
     timetable: {}, // { 1: { p1: '國語', ... }, ... 5: {...} }，1=星期一
+    ttOverrides: {}, // { '2026-11-13': { periods:[{start,end,name,slot,subject}], note } }
+    backup: { auto: false, freq: 'daily', weekdays: [5], time: '15:00', lastAt: '', lastName: '', lastError: '', folderName: '' },
+    music: { tracks: [], loop: 'all', currentId: '' }, // 我的音樂：只存清單，音檔本身留在電腦
     contact: {},
     countdowns: [],
     taskDefs: [
@@ -93,7 +96,7 @@ function load() {
     // 舊版把「115學年度第一學期」整串放在學年度，拆成學年度＋學期
     const m = String(s.settings?.schoolYear || '').match(/(\d+)\s*學年度?\s*(?:第\s*([一二12])\s*學期)?/);
     if (m && s.settings) { s.settings.schoolYear = m[1]; if (m[2] && !s.settings.semester) s.settings.semester = { 1: '一', 2: '二' }[m[2]] || m[2]; }
-    const merged = { ...d, ...s, settings: { ...d.settings, ...s.settings, loc: { ...d.settings.loc, ...(s.settings?.loc || {}) } }, ui: { ...d.ui, ...s.ui }, forest: { ...d.forest, ...s.forest } };
+    const merged = { ...d, ...s, settings: { ...d.settings, ...s.settings, loc: { ...d.settings.loc, ...(s.settings?.loc || {}) } }, ui: { ...d.ui, ...s.ui }, forest: { ...d.forest, ...s.forest }, backup: { ...d.backup, ...(s.backup || {}) }, ttOverrides: (s.ttOverrides && typeof s.ttOverrides === 'object') ? s.ttOverrides : {}, music: normalizeMusic(s.music) };
     if (!Array.isArray(merged.homework)) merged.homework = [];
     migrateTaskAnnounce(merged);
     migrateHomework(merged);
@@ -406,6 +409,59 @@ function buildHwAnnParts(homework, seats, today = dateKey()) {
   return parts;
 }
 
+/* ---------------- 我的音樂（資料層） ----------------
+ * state.music 只存清單（名稱、網址、id），本機檔案的 handle／備份副本存在 IndexedDB，
+ * 音檔本身不會進 localStorage、也不會上傳。
+ */
+function normalizeMusic(m) {
+  const src = (m && typeof m === 'object') ? m : {};
+  const tracks = (Array.isArray(src.tracks) ? src.tracks : []).filter(t => t && typeof t === 'object' && t.id && (t.kind === 'file' || (t.kind === 'url' && parseMusicUrl(t.url).ok)))
+    .map(t => {
+      const o = { id: String(t.id), name: String(t.name || '未命名曲目'), kind: t.kind };
+      if (t.kind === 'url') o.url = parseMusicUrl(t.url).url;
+      else { if (t.size) o.size = Number(t.size) || 0; if (t.type) o.type = String(t.type); if (t.store) o.store = t.store === 'blob' ? 'blob' : 'handle'; }
+      return o;
+    });
+  const loop = ['off', 'one', 'all'].includes(src.loop) ? src.loop : 'all';
+  const currentId = tracks.some(t => t.id === src.currentId) ? String(src.currentId) : '';
+  return { tracks, loop, currentId };
+}
+// 檢查網址：只接受 http(s)；YouTube／Spotify 等影音網站頁面不是音檔
+function parseMusicUrl(raw) {
+  const str = String(raw ?? '').trim();
+  if (!str) return { ok: false, reason: 'empty' };
+  let u;
+  try { u = new URL(str); } catch (e) { return { ok: false, reason: 'invalid' }; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, reason: 'scheme' };
+  const host = u.hostname.toLowerCase().replace(/^www\./, '');
+  const isAudioFile = /\.(mp3|wav|ogg|oga|m4a|aac|flac|webm|opus)$/i.test(u.pathname);
+  if (!isAudioFile && /(^|\.)(youtube\.com|youtu\.be|spotify\.com|music\.apple\.com|music\.youtube\.com|soundcloud\.com|kkbox\.com)$/.test(host)) return { ok: false, reason: 'page', url: u.href };
+  return { ok: true, url: u.href };
+}
+function nameFromUrl(url) {
+  try {
+    const seg = new URL(url).pathname.split('/').filter(Boolean).pop() || '';
+    let n = seg;
+    try { n = decodeURIComponent(seg); } catch (e) {}
+    n = n.replace(/\.(mp3|wav|ogg|oga|m4a|aac|flac|webm|opus)$/i, '').trim();
+    return n || '未命名曲目';
+  } catch (e) { return '未命名曲目'; }
+}
+function musicFileName(name) { return String(name || '').replace(/\.[a-z0-9]{2,5}$/i, '').trim() || '未命名曲目'; }
+// 播完一首之後的下一首（auto=true：自然播完；false：按上一首／下一首）
+function musicNextIndex(len, idx, loop, dir = 1, auto = false) {
+  if (!len) return -1;
+  if (idx < 0 || idx >= len) return dir < 0 ? len - 1 : 0;
+  if (auto) {
+    if (loop === 'one') return idx;
+    const n = idx + 1;
+    if (n < len) return n;
+    return loop === 'all' ? 0 : -1;
+  }
+  return (idx + dir + len) % len;
+}
+function nextLoopMode(loop) { return ({ off: 'one', one: 'all', all: 'off' })[loop] || 'all'; }
+
 let state = load();
 let saveTimer;
 function save() {
@@ -611,24 +667,97 @@ function todayRate(key = dateKey()) {
 /* ---------------- 作息表 ---------------- */
 const dayTT = wd => state.timetable?.[wd] || {};
 const hasTT = wd => Object.values(dayTT(wd)).some(v => String(v || '').trim());
-// 上課節次：該天課表有填 → 依課表（空格=沒課）；該天課表全空 → 依作息表的「星期」欄
-function todaySchedule(d = new Date()) {
+// 平常的課表（不看當天調課）：該天課表有填 → 依課表（空格=沒課）；該天課表全空 → 依作息表的「星期」欄
+function regularSchedule(d = new Date()) {
   const wd = d.getDay(), wdc = WEEK[wd], tt = dayTT(wd), useTT = hasTT(wd);
   return state.schedule
     .filter(r => r.slot ? (useTT ? !!String(tt[r.slot] || '').trim() : (r.days || '').includes(wdc)) : (!r.days || r.days.includes(wdc)))
-    .map(r => ({ ...r, subject: r.slot ? String(tt[r.slot] || '').trim() : '' }))
+    .map(r => ({ start: r.start, end: r.end, name: r.name, slot: r.slot || '', subject: r.slot ? String(tt[r.slot] || '').trim() : '' }))
     .sort((a, b) => toMin(a.start) - toMin(b.start));
 }
+function parseDk(dk) {
+  const [y, m, da] = String(dk).split('-').map(Number);
+  return new Date(y, m - 1, da, 12, 0, 0);
+}
+function overrideKey(d) {
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0, 10);
+  if (d && typeof d.getFullYear === 'function') return dateKey(d);
+  return String(d);
+}
+function getOverride(d) {
+  const ov = (state.ttOverrides || {})[overrideKey(d)];
+  return ov && typeof ov === 'object' ? ov : null;
+}
+function applyDayOverride(dk, periods, note = '') {
+  (state.ttOverrides ||= {})[dk] = {
+    periods: (periods || []).map(r => ({
+      start: r.start, end: r.end, name: String(r.name || '').trim(),
+      slot: r.slot || inferSlot(r.name) || '', subject: String(r.subject || '').trim()
+    })),
+    note: String(note || '').trim()
+  };
+  return state.ttOverrides[dk];
+}
+function clearDayOverride(dk) {
+  if (state.ttOverrides) delete state.ttOverrides[dk];
+}
+function todaySchedule(d = new Date()) {
+  const ov = getOverride(d);
+  if (ov && Array.isArray(ov.periods)) {
+    return ov.periods
+      .map(r => ({ ...r, subject: String(r.subject || '').trim(), _ov: true }))
+      .sort((a, b) => toMin(a.start) - toMin(b.start));
+  }
+  return regularSchedule(d);
+}
+function periodChanged(r, base) {
+  const b = (base || []).find(x => (r.slot && x.slot === r.slot) || (x.name === r.name && x.start === r.start));
+  if (!b) return true;
+  return b.subject !== r.subject || b.start !== r.start || b.end !== r.end || b.name !== r.name;
+}
+function dateOfWeekday(wd, from = new Date()) {
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const monOffset = d.getDay() === 0 ? -6 : 1 - d.getDay();
+  const mon = new Date(d);
+  mon.setDate(d.getDate() + monOffset);
+  const out = new Date(mon);
+  out.setDate(mon.getDate() + (wd === 0 ? 6 : wd - 1));
+  return out;
+}
+function subjectOnDate(d, slot) {
+  const ov = getOverride(d);
+  if (ov && Array.isArray(ov.periods)) {
+    const p = ov.periods.find(r => r.slot === slot);
+    return p ? String(p.subject || '').trim() : '';
+  }
+  return String(dayTT(d.getDay())[slot] || '').trim();
+}
+
 const periodLabel = r => r.subject ? `${r.name}・${r.subject}` : r.name;
 const periodHTML = r => r.subject ? `${esc(r.subject)} <small class="np-slot">${esc(r.name)}</small>` : esc(r.name);
 function renderSchedule() {
   const d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
   const list = todaySchedule(d);
+  const ov = getOverride(d);
+  const base = regularSchedule(d);
   $('#schedDate').textContent = `${d.getMonth() + 1}/${d.getDate()}（${WEEK[d.getDay()]}）`;
+  const adjBtn = $('#adjustBtn');
+  if (adjBtn) {
+    adjBtn.classList.toggle('is-on', !!ov);
+    adjBtn.textContent = ov ? '🔄 已調課' : '🔄 今日調課';
+  }
+  const noteEl = $('#schedAdjNote');
+  if (noteEl) {
+    if (ov) {
+      noteEl.style.display = '';
+      noteEl.textContent = ov.note ? `🔄 今日調課・${ov.note}` : '🔄 今日課表已調整，平常的週課表沒有更動。';
+    } else { noteEl.style.display = 'none'; noteEl.textContent = ''; }
+  }
   const box = $('#nowPeriod');
   if (!list.length) {
     $('#schedList').innerHTML = '';
-    box.innerHTML = `<div class="np-name">今天是假日 🌿</div><div class="np-sub">好好休息，下週見！</div>`;
+    if (ov) box.innerHTML = `<div class="np-name">今天沒有排課</div><div class="np-sub">${ov.note ? esc(ov.note) : '已用臨時調課清空今天的節次。'}</div>`;
+    else box.innerHTML = `<div class="np-name">今天是假日 🌿</div><div class="np-sub">好好休息，下週見！</div>`;
     return null;
   }
   let cur = null, next = null;
@@ -638,7 +767,8 @@ function renderSchedule() {
     if (now >= e) cls = 'past';
     else if (now >= s) { cls = 'now'; cur = r; }
     else if (!next) next = r;
-    return `<li class="${cls}"><span>${r.start}–${r.end}</span><span>${r.subject ? `<small class="sl-slot">${esc(r.name)}</small> <b>${esc(r.subject)}</b>` : esc(r.name)}</span></li>`;
+    const ch = ov && periodChanged(r, base);
+    return `<li class="${cls}${ch ? ' adj' : ''}"><span>${r.start}–${r.end}</span><span>${r.subject ? `<small class="sl-slot">${esc(r.name)}</small> <b>${esc(r.subject)}</b>` : esc(r.name)}${ch ? '<i class="adj-tag">調</i>' : ''}</span></li>`;
   }).join('');
   if (cur) {
     const left = Math.max(0, toMin(cur.end) - now);
@@ -660,17 +790,152 @@ function slotTime(slot) { const r = state.schedule.find(x => x.slot === slot); r
 function weekTableHTML() {
   const d = new Date(), today = d.getDay(), now = d.getHours() * 60 + d.getMinutes();
   const curSlot = (state.schedule.find(r => r.slot && toMin(r.start) <= now && now < toMin(r.end)) || {}).slot;
-  const rows = SLOTS.filter(s => [1, 2, 3, 4, 5].some(w => String(dayTT(w)[s] || '').trim()));
+  const dates = {};
+  [1, 2, 3, 4, 5].forEach(w => dates[w] = dateOfWeekday(w, d));
+  const rows = SLOTS.filter(s => [1, 2, 3, 4, 5].some(w => subjectOnDate(dates[w], s) || String(dayTT(w)[s] || '').trim()));
   if (!rows.length) return '<div class="empty">還沒有填寫週課表。請到「教師控制台 → 週課表」填寫，或從 Excel／照片匯入。</div>';
-  return `<table class="week-table"><thead><tr><th></th>${[1, 2, 3, 4, 5].map(w => `<th class="${w === today ? 'today' : ''}">星期${WEEK[w]}</th>`).join('')}</tr></thead>
+  return `<table class="week-table"><thead><tr><th></th>${[1, 2, 3, 4, 5].map(w => {
+    const ov = getOverride(dates[w]);
+    return `<th class="${w === today ? 'today' : ''}${ov ? ' has-adj' : ''}">星期${WEEK[w]}${ov ? ' <i class="adj-tag">調</i>' : ''}</th>`;
+  }).join('')}</tr></thead>
     <tbody>${rows.map(s => `<tr><th>${slotName(s)}<small>${slotTime(s)}</small></th>${[1, 2, 3, 4, 5].map(w => {
-      const v = String(dayTT(w)[s] || '').trim();
-      return `<td class="${w === today ? 'today' : ''} ${w === today && s === curSlot ? 'now' : ''} ${v ? '' : 'none'}">${esc(v) || '—'}</td>`;
+      const ov = getOverride(dates[w]);
+      const v = subjectOnDate(dates[w], s);
+      const orig = String(dayTT(w)[s] || '').trim();
+      const ch = ov && v !== orig;
+      return `<td class="${w === today ? 'today' : ''} ${w === today && s === curSlot ? 'now' : ''} ${v ? '' : 'none'}${ch ? ' adj' : ''}">${esc(v) || '—'}${ch ? '<i class="adj-tag">調</i>' : ''}</td>`;
     }).join('')}</tr>`).join('')}</tbody></table>`;
 }
-$('#weekBtn').onclick = () => openModal(`<button class="close" data-close>✕</button>
-  <h2>📅 ${esc(state.settings.className)} 週課表</h2><p class="sub">${esc(termText())}　今天的欄位以綠色標示，正在上的課會發亮。</p>
-  ${weekTableHTML()}`, { wide: true });
+$('#weekBtn') && ($('#weekBtn').onclick = () => openModal(`<button class="close" data-close>✕</button>
+  <h2>📅 ${esc(state.settings.className)} 週課表</h2><p class="sub">${esc(termText())}　今天的欄位以綠色標示，正在上的課會發亮。本週有調課的日子會標上「調」。</p>
+  ${weekTableHTML()}`, { wide: true }));
+$('#adjustBtn') && ($('#adjustBtn').onclick = () => openAdjustModal());
+let _afterUnlock = null;
+function openAdjustModal(initDate) {
+  if (!state.settings.setupDone) return openSetup();
+  if (!isAuthed()) {
+    _afterUnlock = () => openAdjustModal(initDate);
+    return teacherOpen('unlock');
+  }
+  let dk = dateKey(initDate || new Date());
+  let rows = [], note = '';
+  const load = () => {
+    const d = parseDk(dk);
+    const ov = getOverride(d);
+    rows = (ov && Array.isArray(ov.periods) ? ov.periods : regularSchedule(d)).map(r => ({ ...r }));
+    note = ov?.note || '';
+  };
+  load();
+  const subjectList = SUBJECTS.map(s => `<option value="${esc(s)}">`).join('');
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>🔄 臨時調課</h2>
+    <p class="sub">只改指定那一天的課表與時間，平常的週課表和作息時間不會被更動。適合當天對調科目、改上一節，或提早放學。</p>
+    <div class="row2">
+      <div class="field"><span>日期</span><input id="adjDate" type="date" value="${dk}"></div>
+      <div class="field"><span>原因（選填，會顯示在作息表上）</span><input id="adjNote" placeholder="例如：因運動會彩排，一、二節對調" value="${esc(note)}"></div>
+    </div>
+    <p class="sub" id="adjBaseHint"></p>
+    <div class="adj-head"><span>開始</span><span>結束</span><span>節次</span><span>科目</span><span></span></div>
+    <div id="adjRows" class="adj-rows"></div>
+    <div class="btn-row" style="justify-content:flex-start;margin:10px 0">
+      <button type="button" class="btn" id="adjAdd">＋ 加一節</button>
+      <button type="button" class="btn" id="adjReload">從原課表重新載入</button>
+    </div>
+    <div id="adjUpcoming" class="adj-upcoming"></div>
+    <div class="modal-actions" style="justify-content:space-between">
+      <button type="button" class="btn danger" id="adjClear">還原為原課表</button>
+      <button type="button" class="primary" id="adjSave">儲存調課</button>
+    </div>
+    <datalist id="adjSubjects">${subjectList}</datalist>`, { wide: true });
+  const sync = () => {
+    rows = $$('#adjRows .adj-row').map(er => ({
+      start: $('[data-k=start]', er).value,
+      end: $('[data-k=end]', er).value,
+      name: $('[data-k=name]', er).value.trim(),
+      slot: er.dataset.slot || inferSlot($('[data-k=name]', er).value) || '',
+      subject: $('[data-k=subject]', er).value.trim()
+    }));
+    note = $('#adjNote').value;
+  };
+  const draw = () => {
+    const base = regularSchedule(parseDk(dk));
+    const ov = getOverride(parseDk(dk));
+    $('#adjBaseHint').textContent = ov
+      ? `這天已經有調課紀錄${ov.note ? '（' + ov.note + '）' : ''}，儲存後會覆蓋。`
+      : (base.length ? '目前顯示的是原來的課表，改完按「儲存調課」就只對這一天生效。' : '這天原本沒有排課，你可以自行加上臨時的節次。');
+    $('#adjNote').value = note;
+    $('#adjRows').innerHTML = rows.map((r, i) => {
+      const ch = periodChanged(r, base);
+      return `<div class="adj-row${ch ? ' changed' : ''}" data-i="${i}" data-slot="${esc(r.slot || '')}">
+        <input type="time" data-k="start" value="${esc(r.start || '')}">
+        <input type="time" data-k="end" value="${esc(r.end || '')}">
+        <input data-k="name" value="${esc(r.name || '')}" placeholder="第一節">
+        <input data-k="subject" value="${esc(r.subject || '')}" placeholder="科目（空白=該節沒課）" list="adjSubjects">
+        <button type="button" data-del="${i}" title="刪除這節">✕</button>
+      </div>`;
+    }).join('') || '<p class="hint">還沒有節次。按「＋ 加一節」，或「從原課表重新載入」。</p>';
+    const upcoming = Object.keys(state.ttOverrides || {}).sort().filter(k => k >= dateKey());
+    $('#adjUpcoming').innerHTML = upcoming.length
+      ? `<p class="sub">已排定的調課：</p><div class="adj-days">${upcoming.map(k => {
+          const n = (state.ttOverrides[k].note || '').trim();
+          const [y, m, da] = k.split('-');
+          return `<button type="button" class="btn ${k === dk ? 'active' : ''}" data-goto-dk="${k}">${+m}/${+da}${n ? '・' + esc(n) : ''}</button>`;
+        }).join('')}</div>`
+      : '';
+  };
+  draw();
+  $('#adjDate').onchange = () => { sync(); dk = $('#adjDate').value; load(); draw(); };
+  $('#adjNote').oninput = () => { note = $('#adjNote').value; };
+  $('#adjRows').onclick = e => {
+    const d = e.target.closest('[data-del]'); if (!d) return;
+    sync(); rows.splice(+d.dataset.del, 1); draw();
+  };
+  $('#adjAdd').onclick = () => {
+    sync();
+    const last = rows[rows.length - 1];
+    const start = last?.end || '15:00';
+    const endMin = toMin(start) + 40;
+    const end = `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}`;
+    rows.push({ start, end, name: '', slot: '', subject: '' });
+    draw();
+  };
+  $('#adjReload').onclick = () => {
+    rows = regularSchedule(parseDk(dk)).map(r => ({ ...r }));
+    draw();
+    toast('已載入原來的課表，還沒儲存');
+  };
+  $('#adjUpcoming').onclick = e => {
+    const b = e.target.closest('[data-goto-dk]'); if (!b) return;
+    sync(); dk = b.dataset.gotoDk; $('#adjDate').value = dk; load(); draw();
+  };
+  $('#adjClear').onclick = () => {
+    askConfirm(`要把 ${dk} 還原成原來的週課表嗎？\n這一天的調課紀錄會被刪除。`, '還原').then(ok => {
+      if (!ok) return;
+      clearDayOverride(dk);
+      save(); renderSchedule(); tick();
+      load(); draw();
+      toast('✅ 已還原為原課表');
+    });
+  };
+  $('#adjSave').onclick = () => {
+    sync();
+    const periods = rows.filter(r => r.start && r.end && r.name);
+    const base = regularSchedule(parseDk(dk));
+    const same = !note.trim() && periods.length === base.length &&
+      periods.every((r, i) => r.start === base[i].start && r.end === base[i].end && r.name === base[i].name && r.subject === base[i].subject);
+    if (same) {
+      clearDayOverride(dk);
+      save(); renderSchedule(); tick(); closeModal();
+      toast('跟原課表一樣，沒有儲存調課');
+      return;
+    }
+    applyDayOverride(dk, periods, note);
+    save(); renderSchedule(); tick(); closeModal();
+    const when = dk === dateKey() ? '今天' : `${+dk.slice(5, 7)}/${+dk.slice(8)}`;
+    toast(`✅ ${when}的調課已儲存（週課表沒有更動）`);
+  };
+}
+
 
 /* ---------------- 聯絡簿 ---------------- */
 function renderContact() {
@@ -840,6 +1105,7 @@ function tick() {
     updateSky();
     if (d.getMinutes() % 30 === 0) loadWeather();
     if (d.getHours() === 0 && d.getMinutes() === 0) renderAll();
+    try { maybeAutoBackup(); } catch (_) {}
   }
 }
 
@@ -952,6 +1218,7 @@ function chirp(t, f1, f2, dur, vol, dest) {
   o.connect(g).connect(dest); o.start(t); o.stop(t + dur + .02);
 }
 function playAmbient(id) {
+  stopMusic();
   stopAmbient(); ambCur = id;
   $$('#ambList li').forEach(li => li.classList.toggle('on', li.dataset.id === id));
   if (id === 'none') return;
@@ -994,10 +1261,458 @@ function playAmbient(id) {
   }
 }
 function renderAmbient() {
-  $('#ambList').innerHTML = AMB.map(a => `<li data-id="${a.id}" class="${a.id === ambCur ? 'on' : ''}"><span class="ai">${a.icon}</span><div><b>${a.name}</b><small>${a.sub}</small></div></li>`).join('');
+  $('#ambList').innerHTML = AMB.map(a => `<li data-id="${a.id}" class="${a.id === ambCur && !musicPlayingId ? 'on' : ''}"><span class="ai">${a.icon}</span><div><b>${a.name}</b><small>${a.sub}</small></div></li>`).join('');
 }
 $('#ambList').addEventListener('click', e => { const li = e.target.closest('li'); if (li) playAmbient(li.dataset.id); });
-$('#ambVol').addEventListener('input', e => { if (ambGain) ambGain.gain.value = e.target.value / 100 * .6; });
+$('#ambVol').addEventListener('input', e => {
+  if (ambGain) ambGain.gain.value = e.target.value / 100 * .6;
+  const a = musicAudio(); if (a) a.volume = musicVolume();
+});
+
+/* ---------------- 我的音樂（播放器） ----------------
+ * 本機檔：Chrome／Edge 用 showOpenFilePicker，把檔案 handle 存在 IndexedDB（重新整理後從原位置再讀）；
+ * 其他瀏覽器或嵌在協作平台裡：改用一般檔案選擇，副本存在這台電腦瀏覽器的 IndexedDB。
+ * 都不會上傳到伺服器。
+ */
+const MUSIC_ACCEPT = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.webm'];
+const LOOP_INFO = { off: { icon: '➡️', label: '不循環（播完清單就停）' }, one: { icon: '🔂', label: '單曲循環' }, all: { icon: '🔁', label: '清單循環' } };
+let musicPlayingId = '';      // 目前載入在播放器的曲目（暫停時仍保留）
+let musicObjUrl = '';         // 給 <audio> 用的暫時網址，換歌或移除時要釋放
+let musicErrCount = 0;        // 連續播放失敗次數，避免無限跳歌
+let musicSeeking = false;
+let _musicReplaceId = '';     // 「重新指定」時要換掉的曲目
+const musicMissing = new Set();   // 找不到檔案、需重新指定的曲目
+const musicNeedPerm = new Set();  // 需要按一下重新授權的曲目
+const musicMem = {};              // 本次開啟期間的檔案（IndexedDB 存不下時的後援）
+
+const musicAudio = () => document.getElementById('musicAudio');
+const musicVolume = () => { const v = $('#ambVol'); return Math.max(0, Math.min(1, (v ? Number(v.value) : 50) / 100)); };
+const musicTracks = () => (state.music ||= normalizeMusic(null)).tracks;
+const musicTrack = id => musicTracks().find(t => t.id === id);
+function fmtSec(sec) {
+  if (!isFinite(sec) || sec < 0) return '0:00';
+  sec = Math.floor(sec);
+  return `${Math.floor(sec / 60)}:${pad(sec % 60)}`;
+}
+function isAudioFile(f) {
+  if (!f) return false;
+  if (String(f.type || '').startsWith('audio/')) return true;
+  return MUSIC_ACCEPT.some(ext => String(f.name || '').toLowerCase().endsWith(ext));
+}
+
+/* ---- 清單資料 ---- */
+function addUrlTrack(raw, name) {
+  const r = parseMusicUrl(raw);
+  if (!r.ok) return r;
+  const t = { id: 'm' + uid(), name: String(name || '').trim() || nameFromUrl(r.url), kind: 'url', url: r.url };
+  musicTracks().push(t);
+  save(); renderMusic();
+  return { ok: true, track: t };
+}
+function addFileTrackMeta(info = {}) {
+  const t = { id: 'm' + uid(), name: musicFileName(info.name), kind: 'file', store: info.store === 'blob' ? 'blob' : 'handle' };
+  if (info.size) t.size = Number(info.size) || 0;
+  if (info.type) t.type = String(info.type);
+  musicTracks().push(t);
+  save(); renderMusic();
+  return t;
+}
+function removeTrack(id) {
+  const list = musicTracks();
+  const i = list.findIndex(t => t.id === id);
+  if (i < 0) return false;
+  if (musicPlayingId === id) stopMusic(true);
+  list.splice(i, 1);
+  if (state.music.currentId === id) state.music.currentId = '';
+  musicMissing.delete(id); musicNeedPerm.delete(id); delete musicMem[id];
+  idbDel('musicFile_' + id); idbDel('musicBlob_' + id);
+  save(); renderMusic();
+  return true;
+}
+function setMusicLoop(mode) {
+  state.music.loop = ['off', 'one', 'all'].includes(mode) ? mode : 'all';
+  save(); renderMusicControls();
+  return state.music.loop;
+}
+function cycleMusicLoop() {
+  const m = setMusicLoop(nextLoopMode(state.music.loop));
+  toast(LOOP_INFO[m].icon + ' ' + LOOP_INFO[m].label);
+  return m;
+}
+// 按上一首／下一首要跳到哪一首
+function musicStepId(dir = 1) {
+  const list = musicTracks();
+  const cur = musicPlayingId || state.music.currentId;
+  const i = musicNextIndex(list.length, list.findIndex(t => t.id === cur), state.music.loop, dir, false);
+  return i < 0 ? '' : list[i].id;
+}
+// 一首自然播完後要接哪一首（''＝停止）
+function musicAfterEndId(curId = musicPlayingId) {
+  const list = musicTracks();
+  const i = musicNextIndex(list.length, list.findIndex(t => t.id === curId), state.music.loop, 1, true);
+  return i < 0 ? '' : list[i].id;
+}
+
+/* ---- 取得音源 ---- */
+function musicErr(code) { const e = new Error(code); e.code = code; return e; }
+async function musicSrcFor(t, fromGesture) {
+  if (t.kind === 'url') return { src: t.url, obj: false };
+  if (musicMem[t.id]) return { src: URL.createObjectURL(musicMem[t.id]), obj: true };
+  const handle = await idbGet('musicFile_' + t.id);
+  if (handle && typeof handle.getFile === 'function') {
+    let perm = 'granted';
+    if (typeof handle.queryPermission === 'function') perm = await handle.queryPermission({ mode: 'read' });
+    if (perm !== 'granted') {
+      if (!fromGesture || typeof handle.requestPermission !== 'function') throw musicErr('perm');
+      perm = await handle.requestPermission({ mode: 'read' });
+      if (perm !== 'granted') throw musicErr('denied');
+    }
+    musicNeedPerm.delete(t.id);
+    let file;
+    try { file = await handle.getFile(); } catch (e) { throw musicErr('missing'); }
+    return { src: URL.createObjectURL(file), obj: true };
+  }
+  const blob = await idbGet('musicBlob_' + t.id);
+  if (blob && typeof blob === 'object') return { src: URL.createObjectURL(blob), obj: true };
+  throw musicErr('missing');
+}
+function revokeMusicUrl() {
+  if (musicObjUrl) { try { URL.revokeObjectURL(musicObjUrl); } catch (e) {} musicObjUrl = ''; }
+}
+// 開始播自己的音樂：關掉內建環境音
+function musicTakeOver() {
+  stopAmbient(); ambCur = 'none';
+  $$('#ambList li').forEach(li => li.classList.remove('on'));
+}
+function safePlay(a) {
+  let p;
+  try { p = a.play(); } catch (e) { p = Promise.reject(e); }
+  if (p && typeof p.catch === 'function') p.catch(e => {
+    if (e && e.name === 'NotAllowedError') toast('瀏覽器擋住了自動播放，請再按一次 ▶');
+    renderMusicControls();
+  });
+}
+
+/* ---- 播放控制 ---- */
+async function playTrack(id, { fromGesture = true } = {}) {
+  const t = musicTrack(id);
+  const a = musicAudio();
+  if (!t || !a) return false;
+  musicTakeOver();
+  state.music.currentId = id; save();
+  let r;
+  try { r = await musicSrcFor(t, fromGesture); }
+  catch (e) {
+    const code = e && e.code;
+    if (code === 'perm') { musicNeedPerm.add(id); showMusicPerm(); toast('請先按「點一下以使用本機音樂檔」，再播放'); }
+    else if (code === 'denied') toast('沒有讀取這個檔案的權限，請再試一次');
+    else { musicMissing.add(id); toast(`找不到「${t.name}」這個檔案，請按「重新指定」選擇檔案`, 3500); }
+    renderMusic();
+    return false;
+  }
+  try { a.pause(); } catch (e) {}
+  revokeMusicUrl();
+  if (r.obj) musicObjUrl = r.src;
+  musicMissing.delete(id);
+  musicPlayingId = id;
+  a.loop = false;
+  a.volume = musicVolume();
+  a.src = r.src;
+  safePlay(a);
+  renderMusic();
+  return true;
+}
+function pauseMusic() {
+  const a = musicAudio();
+  if (a) { try { a.pause(); } catch (e) {} }
+  renderMusicControls();
+}
+// 停止並卸下音源（播放內建環境音、移除正在播的曲目、還原備份時）
+function stopMusic(unload = true) {
+  const a = musicAudio();
+  if (a) {
+    try { a.pause(); } catch (e) {}
+    if (unload && musicPlayingId) { a.removeAttribute('src'); try { a.load(); } catch (e) {} }
+  }
+  if (unload) { revokeMusicUrl(); musicPlayingId = ''; }
+  if (document.getElementById('musicList')) renderMusic();
+}
+function toggleMusic() {
+  const a = musicAudio(); if (!a) return;
+  if (musicPlayingId && a.getAttribute('src')) {
+    if (a.paused) { musicTakeOver(); safePlay(a); } else a.pause();
+    renderMusicControls();
+    return;
+  }
+  const list = musicTracks();
+  if (!list.length) return toast('清單是空的，先上傳檔案或加入網址');
+  playTrack(musicTrack(state.music.currentId) ? state.music.currentId : list[0].id);
+}
+function musicStep(dir) {
+  const id = musicStepId(dir);
+  if (!id) return toast('清單是空的，先上傳檔案或加入網址');
+  playTrack(id);
+}
+
+/* ---- 新增：本機檔案 ---- */
+function canPickMusicFile() { return typeof window.showOpenFilePicker === 'function'; }
+async function pickMusicFiles(replaceId = '') {
+  _musicReplaceId = replaceId;
+  if (canPickMusicFile() && !inIframe()) {
+    try {
+      const handles = await window.showOpenFilePicker({
+        multiple: !replaceId,
+        types: [{ description: '音訊', accept: { 'audio/*': MUSIC_ACCEPT } }]
+      });
+      await addMusicHandles(handles, replaceId);
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      if (!(e && e.name === 'SecurityError')) { toast('無法開啟檔案選擇，改用一般上傳'); }
+    }
+  }
+  if (inIframe()) toast('目前嵌在別的網頁裡，改用一般上傳（音樂會存在這台電腦的瀏覽器）。想直接讀電腦裡的檔案，請用新分頁打開儀表板。', 5000);
+  const inp = $('#musicFileInput');
+  if (inp) { inp.multiple = !replaceId; inp.value = ''; inp.click(); }
+}
+async function addMusicHandles(handles, replaceId = '') {
+  let n = 0, skip = 0;
+  for (const h of handles || []) {
+    let f;
+    try { f = await h.getFile(); } catch (e) { skip++; continue; }
+    if (!isAudioFile(f)) { skip++; continue; }
+    let t;
+    if (replaceId && musicTrack(replaceId)) {
+      t = musicTrack(replaceId);
+      Object.assign(t, { name: musicFileName(f.name), kind: 'file', store: 'handle', size: f.size || 0, type: f.type || '' });
+      if (musicPlayingId === replaceId) stopMusic(true);
+      idbDel('musicBlob_' + t.id); delete musicMem[t.id];
+      musicMissing.delete(t.id); musicNeedPerm.delete(t.id);
+    } else t = addFileTrackMeta({ name: f.name, size: f.size, type: f.type, store: 'handle' });
+    try { await idbSet('musicFile_' + t.id, h); }
+    catch (e) { musicMem[t.id] = f; toast('瀏覽器無法記住這個檔案，重新整理後需要重新選擇'); }
+    n++;
+  }
+  save(); renderMusic();
+  if (n) toast(replaceId ? '✅ 已重新指定檔案' : `✅ 已加入 ${n} 首（檔案仍在你的電腦裡）`);
+  if (skip) toast(`有 ${skip} 個檔案不是音樂檔，已略過`);
+}
+async function addMusicFiles(files, replaceId = '') {
+  let n = 0, skip = 0, mem = 0;
+  for (const f of files || []) {
+    if (!isAudioFile(f)) { skip++; continue; }
+    let t;
+    if (replaceId && musicTrack(replaceId)) {
+      t = musicTrack(replaceId);
+      Object.assign(t, { name: musicFileName(f.name), kind: 'file', store: 'blob', size: f.size || 0, type: f.type || '' });
+      if (musicPlayingId === replaceId) stopMusic(true);
+      idbDel('musicFile_' + t.id);
+      musicMissing.delete(t.id); musicNeedPerm.delete(t.id);
+    } else t = addFileTrackMeta({ name: f.name, size: f.size, type: f.type, store: 'blob' });
+    musicMem[t.id] = f;
+    try { await idbSet('musicBlob_' + t.id, f); } catch (e) { mem++; }
+    n++;
+  }
+  save(); renderMusic();
+  if (n) toast(replaceId ? '✅ 已重新指定檔案' : `✅ 已加入 ${n} 首（存在這台電腦的瀏覽器裡，不會上傳）`);
+  if (mem) toast(`瀏覽器空間不足，有 ${mem} 首重新整理後要重新選擇`, 3500);
+  if (skip) toast(`有 ${skip} 個檔案不是音樂檔，已略過`);
+}
+
+/* ---- 新增：網址 ---- */
+function submitMusicUrl() {
+  const inp = $('#musicUrlInput'); if (!inp) return;
+  const r = addUrlTrack(inp.value);
+  if (!r.ok) {
+    if (r.reason === 'empty') toast('請貼上音樂檔的網址');
+    else if (r.reason === 'page') toast('這個播放器需要「音樂檔」的直接網址（例如 .mp3），YouTube、Spotify 等影音網站的頁面無法播放', 4500);
+    else toast('網址格式不對，只能用 http:// 或 https:// 開頭的網址');
+    inp.focus();
+    return;
+  }
+  inp.value = '';
+  $('#musicUrlRow').style.display = 'none';
+  toast(`✅ 已加入「${r.track.name}」`);
+}
+
+/* ---- 重新整理後檢查本機檔狀態（不主動跳授權視窗） ---- */
+async function refreshMusicAvail() {
+  const files = musicTracks().filter(t => t.kind === 'file');
+  for (const t of files) {
+    if (musicMem[t.id]) continue;
+    const h = await idbGet('musicFile_' + t.id);
+    if (h && typeof h.getFile === 'function') {
+      musicMissing.delete(t.id);
+      try {
+        const p = typeof h.queryPermission === 'function' ? await h.queryPermission({ mode: 'read' }) : 'granted';
+        if (p === 'granted') musicNeedPerm.delete(t.id); else musicNeedPerm.add(t.id);
+      } catch (e) { musicNeedPerm.add(t.id); }
+      continue;
+    }
+    const b = await idbGet('musicBlob_' + t.id);
+    if (b) musicMissing.delete(t.id); else musicMissing.add(t.id);
+  }
+  renderMusic();
+}
+function showMusicPerm() {
+  const el = $('#musicPerm');
+  if (el) el.style.display = musicNeedPerm.size ? '' : 'none';
+}
+async function grantMusicPerm() {
+  let ok = 0, fail = 0;
+  for (const id of [...musicNeedPerm]) {
+    const h = await idbGet('musicFile_' + id);
+    if (!h || typeof h.requestPermission !== 'function') { musicNeedPerm.delete(id); continue; }
+    try {
+      const p = await h.requestPermission({ mode: 'read' });
+      if (p === 'granted') { musicNeedPerm.delete(id); ok++; } else fail++;
+    } catch (e) { fail++; }
+  }
+  renderMusic();
+  if (ok && !fail) toast('✅ 已可使用本機音樂檔');
+  else if (fail) toast('有些檔案沒有授權，播放時會再詢問');
+}
+
+/* ---- 畫面 ---- */
+function musicNeedsAuth(after) {
+  if (!state.settings.setupDone) { openSetup(); return true; }
+  if (isAuthed()) { touchAuth(); return false; }
+  _afterUnlock = after;
+  teacherOpen('unlock');
+  return true;
+}
+function renderMusicControls() {
+  const a = musicAudio();
+  const playing = !!(a && musicPlayingId && !a.paused);
+  const pb = $('#musicPlay');
+  if (pb) { pb.textContent = playing ? '⏸' : '▶'; pb.title = playing ? '暫停' : '播放'; }
+  const lb = $('#musicLoop');
+  const info = LOOP_INFO[state.music.loop] || LOOP_INFO.all;
+  if (lb) { lb.textContent = info.icon; lb.title = info.label; lb.classList.toggle('active', state.music.loop !== 'off'); }
+  const now = $('#musicNow');
+  const t = musicTrack(musicPlayingId);
+  if (now) now.textContent = t ? (playing ? '♪ ' : '⏸ ') + t.name : '尚未播放';
+  if (!t) {
+    const s = $('#musicSeek'); if (s) s.value = 0;
+    const c = $('#musicCur'); if (c) c.textContent = '0:00';
+    const d = $('#musicDur'); if (d) d.textContent = '0:00';
+  }
+}
+function renderMusic() {
+  const ul = $('#musicList'); if (!ul) return;
+  const list = musicTracks();
+  ul.innerHTML = list.map(t => {
+    const miss = musicMissing.has(t.id);
+    const on = t.id === musicPlayingId;
+    return `<li data-mid="${esc(t.id)}" class="${on ? 'on' : ''}${miss ? ' missing' : ''}" title="${esc(t.kind === 'url' ? t.url : t.name)}">
+      <span class="mi">${on ? '♪' : '▸'}</span>
+      <span class="mn"><b>${esc(t.name)}</b>${miss ? '<small>檔案找不到，請重新指定</small>' : ''}</span>
+      <span class="mbadge ${t.kind}">${t.kind === 'url' ? '網址' : '檔案'}</span>
+      ${t.kind === 'file' && miss ? `<button type="button" class="mre" data-repick="${esc(t.id)}" title="重新選擇這首的檔案">重新指定</button>` : ''}
+      <button type="button" class="mdel" data-mdel="${esc(t.id)}" title="從清單移除（不會刪除電腦裡的檔案）">✕</button>
+    </li>`;
+  }).join('');
+  const em = $('#musicEmpty'); if (em) em.style.display = list.length ? 'none' : '';
+  ul.style.display = list.length ? '' : 'none';
+  showMusicPerm();
+  renderMusicControls();
+  if (musicPlayingId) $$('#ambList li').forEach(li => li.classList.remove('on'));
+}
+
+/* ---- 事件 ---- */
+(function bindMusic() {
+  const a = musicAudio(); if (!a) return;
+  a.addEventListener('play', renderMusicControls);
+  a.addEventListener('pause', renderMusicControls);
+  a.addEventListener('playing', () => { musicErrCount = 0; renderMusicControls(); });
+  a.addEventListener('loadedmetadata', () => { const d = $('#musicDur'); if (d) d.textContent = fmtSec(a.duration); });
+  a.addEventListener('timeupdate', () => {
+    if (musicSeeking) return;
+    const c = $('#musicCur'); if (c) c.textContent = fmtSec(a.currentTime);
+    const s = $('#musicSeek'); if (s && isFinite(a.duration) && a.duration > 0) s.value = Math.round(a.currentTime / a.duration * 1000);
+  });
+  a.addEventListener('ended', () => {
+    const cur = musicPlayingId;
+    const next = musicAfterEndId(cur);
+    if (!next) { renderMusicControls(); return; }
+    if (next === cur) { a.currentTime = 0; safePlay(a); return; }
+    playTrack(next, { fromGesture: false });
+  });
+  a.addEventListener('error', () => {
+    if (!musicPlayingId || !a.getAttribute('src')) return;
+    const t = musicTrack(musicPlayingId);
+    toast(`⚠️ 無法播放「${t ? t.name : ''}」：檔案不存在、網址失效或格式不支援`, 3500);
+    musicErrCount++;
+    const list = musicTracks();
+    const next = musicAfterEndId(musicPlayingId);
+    if (list.length > 1 && musicErrCount < list.length && next && next !== musicPlayingId) {
+      setTimeout(() => playTrack(next, { fromGesture: false }), 800);
+    } else { musicErrCount = 0; stopMusic(true); }
+  });
+  const seek = $('#musicSeek');
+  if (seek) {
+    seek.addEventListener('input', () => {
+      musicSeeking = true;
+      if (isFinite(a.duration) && a.duration > 0) {
+        const c = $('#musicCur'); if (c) c.textContent = fmtSec(seek.value / 1000 * a.duration);
+      }
+    });
+    seek.addEventListener('change', () => {
+      if (musicPlayingId && isFinite(a.duration) && a.duration > 0) a.currentTime = seek.value / 1000 * a.duration;
+      musicSeeking = false;
+    });
+  }
+  $('#musicPlay').onclick = () => toggleMusic();
+  $('#musicPrev').onclick = () => musicStep(-1);
+  $('#musicNext').onclick = () => musicStep(1);
+  $('#musicLoop').onclick = () => cycleMusicLoop();
+  $('#musicPerm').onclick = () => grantMusicPerm();
+  $('#musicAddFile').onclick = () => {
+    if (musicNeedsAuth(() => pickMusicFiles())) return;
+    pickMusicFiles();
+  };
+  $('#musicAddUrl').onclick = () => {
+    const open = () => {
+      const row = $('#musicUrlRow');
+      const show = row.style.display === 'none';
+      row.style.display = show ? '' : 'none';
+      if (show) setTimeout(() => $('#musicUrlInput').focus(), 30);
+    };
+    if (musicNeedsAuth(open)) return;
+    open();
+  };
+  $('#musicUrlOk').onclick = () => { if (!musicNeedsAuth(submitMusicUrl)) submitMusicUrl(); };
+  $('#musicUrlInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); if (!musicNeedsAuth(submitMusicUrl)) submitMusicUrl(); }
+    if (e.key === 'Escape') { e.stopPropagation(); $('#musicUrlRow').style.display = 'none'; }
+  });
+  $('#musicFileInput').onchange = e => {
+    const files = [...(e.target.files || [])];
+    const rid = _musicReplaceId; _musicReplaceId = '';
+    e.target.value = '';
+    if (files.length) addMusicFiles(files, rid);
+  };
+  $('#musicList').addEventListener('click', e => {
+    const del = e.target.closest('[data-mdel]');
+    if (del) {
+      const id = del.dataset.mdel;
+      const go = () => { const t = musicTrack(id); if (removeTrack(id) && t) toast(`已從清單移除「${t.name}」`); };
+      if (musicNeedsAuth(go)) return;
+      go(); return;
+    }
+    const re = e.target.closest('[data-repick]');
+    if (re) {
+      const id = re.dataset.repick;
+      if (musicNeedsAuth(() => pickMusicFiles(id))) return;
+      pickMusicFiles(id); return;
+    }
+    const li = e.target.closest('li[data-mid]');
+    if (!li) return;
+    const id = li.dataset.mid;
+    if (id === musicPlayingId && a.getAttribute('src')) return toggleMusic();
+    playTrack(id);
+  });
+})();
 
 /* ---------------- 倒數計時 ---------------- */
 const timer = { total: 300, left: 300, running: false, end: 0, iv: null };
@@ -1775,7 +2490,13 @@ $('#consoleBtn').onclick = () => teacherOpen();
 $('#announceBox').onclick = () => teacherOpen('basic', '#bAnn');
 function teacherOpen(tab, focusSel) {
   const go = () => {
-    if (tab === 'unlock') { closeModal(); toast('🔓 已解鎖，可以編輯聯絡簿與倒數日（閒置 5 分鐘自動上鎖）', 3000); return; }
+    if (tab === 'unlock') {
+      const fn = _afterUnlock; _afterUnlock = null;
+      closeModal();
+      if (fn) fn();
+      else toast('🔓 已解鎖，可以編輯聯絡簿與倒數日（閒置 5 分鐘自動上鎖）', 3000);
+      return;
+    }
     openConsole(tab); if (focusSel) setTimeout(() => { const f = $(focusSel); if (f) { f.focus(); f.select?.(); } }, 80); };
   if (!state.settings.setupDone) return openSetup();
   if (isAuthed()) return go();
@@ -1784,7 +2505,7 @@ function teacherOpen(tab, focusSel) {
     <form id="loginForm"><div class="field"><input id="lPw" type="password" autofocus autocomplete="current-password"></div>
     <div class="err" id="lErr"></div>
     <div class="modal-actions"><button class="primary" type="submit">登入</button></div></form>
-    <p class="sub" style="margin-top:14px;font-size:12px">忘記密碼？只能在「這台電腦的瀏覽器」清除網站資料後重新設定（會清空班級資料，建議平時先匯出備份）。</p>`);
+    <p class="sub" style="margin-top:14px;font-size:12px">忘記密碼？只能在「這台電腦的瀏覽器」清除網站資料後重新設定（會清空班級資料，建議平時先匯出備份）。</p>`, { onClose: () => { _afterUnlock = null; } });
   $('#loginForm').onsubmit = async e => {
     e.preventDefault();
     if (await hashPw($('#lPw').value) === state.settings.pwHash) {
@@ -2064,14 +2785,289 @@ function ctPoints(el) {
   });
 }
 
+const DEFAULT_BACKUP = { auto: false, freq: 'daily', weekdays: [5], time: '15:00', lastAt: '', lastName: '', lastError: '', folderName: '' };
+function backupCfg() { return { ...DEFAULT_BACKUP, ...(state.backup || {}) }; }
+function backupDays(cfg) {
+  if ((cfg.freq || 'daily') === 'weekly') {
+    const w = (cfg.weekdays || []).map(Number).filter(n => n >= 0 && n <= 6);
+    return w.length ? w : [5];
+  }
+  return [0, 1, 2, 3, 4, 5, 6];
+}
+function backupTimeParts(cfg) {
+  const m = String(cfg.time || '15:00').match(/(\d{1,2}):(\d{2})/);
+  const hh = m ? Math.min(23, Math.max(0, +m[1])) : 15;
+  const mm = m ? Math.min(59, Math.max(0, +m[2])) : 0;
+  return [hh, mm];
+}
+function lastDueSlot(cfg, now = new Date()) {
+  const [hh, mm] = backupTimeParts(cfg);
+  const days = backupDays(cfg);
+  for (let i = 0; i < 16; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i, hh, mm, 0, 0);
+    if (d <= now && days.includes(d.getDay())) return d;
+  }
+  return null;
+}
+function nextBackupAt(cfg, now = new Date()) {
+  const [hh, mm] = backupTimeParts(cfg);
+  const days = backupDays(cfg);
+  for (let i = 0; i < 16; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, hh, mm, 0, 0);
+    if (d > now && days.includes(d.getDay())) return d;
+  }
+  return null;
+}
+function isBackupDue(cfg, now = new Date()) {
+  if (!cfg || !cfg.auto) return false;
+  const slot = lastDueSlot(cfg, now);
+  if (!slot) return false;
+  if (!cfg.lastAt) return true;
+  const last = new Date(cfg.lastAt);
+  return !isNaN(last) && last < slot;
+}
+function fmtWhen(d) {
+  if (!d || isNaN(d)) return '';
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function backupPayload() { return JSON.stringify(state, null, 1); }
+function backupFileName(tag = '手動備份') {
+  return `班級儀表板_${state.settings.className || '班級'}_${tag}_${dateKey()}.json`;
+}
+
+const IDB_BACKUP = 'jl-dashboard-fs';
+function idbGet(key) {
+  return new Promise(resolve => {
+    try {
+      if (!window.indexedDB) return resolve(undefined);
+      const req = indexedDB.open(IDB_BACKUP, 1);
+      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('kv')) req.result.createObjectStore('kv'); };
+      req.onerror = () => resolve(undefined);
+      req.onsuccess = () => {
+        const db = req.result;
+        const q = db.transaction('kv', 'readonly').objectStore('kv').get(key);
+        q.onsuccess = () => { db.close(); resolve(q.result); };
+        q.onerror = () => { db.close(); resolve(undefined); };
+      };
+    } catch (e) { resolve(undefined); }
+  });
+}
+function idbSet(key, val) {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(IDB_BACKUP, 1);
+      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('kv')) req.result.createObjectStore('kv'); };
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put(val, key);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+      };
+    } catch (e) { reject(e); }
+  });
+}
+
+function idbDel(key) {
+  return new Promise(resolve => {
+    try {
+      if (!window.indexedDB) return resolve();
+      const req = indexedDB.open(IDB_BACKUP, 1);
+      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('kv')) req.result.createObjectStore('kv'); };
+      req.onerror = () => resolve();
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').delete(key);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); resolve(); };
+      };
+    } catch (e) { resolve(); }
+  });
+}
+// 刪除某個開頭的所有 key（完全重設時清掉音樂檔 handle／副本）
+function idbDelPrefix(prefix) {
+  return new Promise(resolve => {
+    try {
+      if (!window.indexedDB) return resolve();
+      const req = indexedDB.open(IDB_BACKUP, 1);
+      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('kv')) req.result.createObjectStore('kv'); };
+      req.onerror = () => resolve();
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('kv', 'readwrite');
+        const st = tx.objectStore('kv');
+        const cur = st.openCursor();
+        cur.onsuccess = () => {
+          const c = cur.result; if (!c) return;
+          if (String(c.key).startsWith(prefix)) c.delete();
+          c.continue();
+        };
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); resolve(); };
+      };
+    } catch (e) { resolve(); }
+  });
+}
+
+function canPickFolder() { return typeof window.showDirectoryPicker === 'function'; }
+async function pickBackupFolder() {
+  if (!canPickFolder()) {
+    toast('這個瀏覽器不能指定資料夾，請改用 Chrome 或 Edge');
+    return null;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ id: 'jl-backup', mode: 'readwrite', startIn: 'documents' });
+    const perm = await handle.requestPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') { toast('沒有寫入這個資料夾的權限'); return null; }
+    await idbSet('backupDir', handle);
+    state.backup = { ...backupCfg(), folderName: handle.name };
+    save();
+    return handle;
+  } catch (e) {
+    if (e && e.name === 'AbortError') return null;
+    if ((e && e.name === 'SecurityError') || inIframe()) {
+      showBackupBanner('embedded');
+      toast('目前是嵌在別的網頁裡，無法選擇資料夾。請用「開新分頁」打開儀表板再設定。');
+      return null;
+    }
+    toast('無法選擇資料夾');
+    return null;
+  }
+}
+async function writeBackupToFolder(handle, tag = '自動備份') {
+  const perm = await handle.queryPermission({ mode: 'readwrite' });
+  if (perm !== 'granted') {
+    const req = await handle.requestPermission({ mode: 'readwrite' });
+    if (req !== 'granted') { const err = new Error('permission'); err.code = 'permission'; throw err; }
+  }
+  const name = backupFileName(tag);
+  const file = await handle.getFileHandle(name, { create: true });
+  const w = await file.createWritable();
+  await w.write(backupPayload());
+  await w.close();
+  return name;
+}
+function hideBackupBanner() {
+  const el = document.getElementById('backupBanner');
+  if (el) el.style.display = 'none';
+}
+function showBackupBanner(kind) {
+  let el = document.getElementById('backupBanner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'backupBanner';
+    el.className = 'backup-banner';
+    el.innerHTML = `<span class="bb-msg"></span><button type="button" class="primary" id="backupBannerGo">授權並備份</button><button type="button" class="btn" id="backupBannerDismiss">稍後</button>`;
+    document.body.appendChild(el);
+    el.querySelector('#backupBannerDismiss').onclick = hideBackupBanner;
+    el.querySelector('#backupBannerGo').onclick = async () => {
+      hideBackupBanner();
+      const handle = await idbGet('backupDir') || await pickBackupFolder();
+      if (!handle) return;
+      try {
+        const name = await writeBackupToFolder(handle, '自動備份');
+        markBackupOk(name);
+        toast('✅ 已自動備份到「' + (state.backup.folderName || '') + '」');
+      } catch (e) {
+        toast('❌ 備份沒有成功，請再試一次或改用手動備份');
+      }
+    };
+  }
+  const msg = el.querySelector('.bb-msg');
+  const go = el.querySelector('#backupBannerGo');
+  if (kind === 'embedded') {
+    msg.textContent = '自動備份要在獨立分頁才能指定資料夾。請先用新分頁打開儀表板。';
+    go.style.display = 'none';
+  } else if (kind === 'nofolder') {
+    msg.textContent = '自動備份已開啟，但還沒指定資料夾。';
+    go.textContent = '選擇資料夾並備份';
+    go.style.display = '';
+  } else {
+    msg.textContent = '今日的自動備份需要你按一下，授權寫入備份資料夾。';
+    go.textContent = '授權並備份';
+    go.style.display = '';
+  }
+  el.style.display = 'flex';
+}
+function markBackupOk(name) {
+  state.backup = { ...backupCfg(), lastAt: new Date().toISOString(), lastName: name || '', lastError: '' };
+  save();
+  hideBackupBanner();
+}
+let _backupBusy = false;
+async function maybeAutoBackup(fromUser = false) {
+  const cfg = backupCfg();
+  if (!cfg.auto || _backupBusy) return false;
+  if (!fromUser && !isBackupDue(cfg)) return false;
+  _backupBusy = true;
+  try {
+    const handle = await idbGet('backupDir');
+    if (!handle) { showBackupBanner('nofolder'); return false; }
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    if (perm !== 'granted' && !fromUser) { showBackupBanner('permission'); return false; }
+    const name = await writeBackupToFolder(handle, '自動備份');
+    markBackupOk(name);
+    toast('✅ 已自動備份到「' + (cfg.folderName || handle.name || '') + '」', 3500);
+    return true;
+  } catch (e) {
+    if (e && e.code === 'permission') { showBackupBanner('permission'); return false; }
+    state.backup = { ...cfg, lastError: String(e && e.message || e) };
+    save();
+    if (fromUser) toast('❌ 寫入資料夾失敗，請重新選擇資料夾，或改用手動備份');
+    return false;
+  } finally { _backupBusy = false; }
+}
+
+function backupStatusText(cfg) {
+  const last = cfg.lastAt ? fmtWhen(new Date(cfg.lastAt)) : '尚未備份';
+  const next = cfg.auto ? fmtWhen(nextBackupAt(cfg)) : '（未啟用）';
+  const folder = cfg.folderName ? `資料夾「${cfg.folderName}」` : '還沒指定資料夾';
+  const freq = (cfg.freq || 'daily') === 'weekly'
+    ? `每週星期${(backupDays(cfg)).map(d => WEEK[d]).join('、')} ${cfg.time || '15:00'}`
+    : `每日 ${cfg.time || '15:00'}`;
+  return { last, next, folder, freq };
+}
 function ctData(el) {
+  const cfg = backupCfg();
+  const st = backupStatusText(cfg);
+  const wdBtns = [1, 2, 3, 4, 5, 6, 0].map(d =>
+    `<button type="button" class="btn wd${(cfg.weekdays || []).includes(d) ? ' active' : ''}" data-wd="${d}">${WEEK[d]}</button>`
+  ).join('');
   el.innerHTML = `
-    <h4 style="margin:0 0 8px">備份與還原</h4>
-    <p class="sub">資料只存在這台電腦的瀏覽器裡。換電腦、換瀏覽器或清除瀏覽紀錄前，請先「匯出備份」。</p>
+    <h4 style="margin:0 0 8px">手動備份</h4>
+    <p class="sub">立刻下載一份 JSON 備份檔到電腦（通常在「下載」資料夾）。換電腦、換瀏覽器或清除紀錄前，請先做一次。也可以隨時用來還原。「我的音樂」只會備份清單（曲名、網址），不含音檔本身。</p>
     <div class="btn-row" style="justify-content:flex-start">
-      <button class="btn" id="dExport">⬇️ 匯出備份檔</button>
-      <label class="btn" style="cursor:pointer">⬆️ 匯入備份檔<input type="file" id="dImport" accept=".json,application/json" hidden></label>
+      <button class="btn" id="dExport">⬇️ 手動備份（下載檔案）</button>
+      <label class="btn" style="cursor:pointer">⬆️ 還原備份檔<input type="file" id="dImport" accept=".json,application/json" hidden></label>
     </div>
+
+    <h4 style="margin:22px 0 8px">自動備份</h4>
+    <p class="sub">啟用後，到了指定時間會把備份寫進你選的資料夾。網頁要開著才會當場寫入；如果那時沒開，下次打開儀表板時會補做一次。請使用 Chrome 或 Edge。瀏覽器只會記住資料夾本身，不會顯示完整路徑（例如 C:\…），這是瀏覽器的安全限制。</p>
+    <label class="ann-chk" style="margin:8px 0 12px;display:inline-flex"><input type="checkbox" id="bkAuto"${cfg.auto ? ' checked' : ''}>啟用自動備份</label>
+    <div id="bkOpts" class="bk-opts" style="display:${cfg.auto ? '' : 'none'}">
+      <div class="field"><span>備份頻率</span>
+        <div class="btn-row" style="justify-content:flex-start">
+          <button type="button" class="btn${cfg.freq !== 'weekly' ? ' active' : ''}" id="bkDaily">每日</button>
+          <button type="button" class="btn${cfg.freq === 'weekly' ? ' active' : ''}" id="bkWeekly">每週（指定星期）</button>
+        </div>
+      </div>
+      <div class="field" id="bkWdWrap" style="display:${cfg.freq === 'weekly' ? '' : 'none'}"><span>每週的哪幾天</span>
+        <div class="btn-row" id="bkWds" style="justify-content:flex-start">${wdBtns}</div>
+      </div>
+      <div class="field"><span>備份時間（沒指定就用下午 3:00）</span>
+        <input type="time" id="bkTime" value="${esc(cfg.time || '15:00')}"></div>
+      <div class="field"><span>備份資料夾</span>
+        <div class="btn-row" style="justify-content:flex-start;align-items:center;flex-wrap:wrap">
+          <button type="button" class="btn" id="bkPick">📁 ${cfg.folderName ? '更改資料夾' : '選擇資料夾'}</button>
+          <span class="sub" id="bkFolder" style="margin:0">${esc(st.folder)}</span>
+        </div>
+      </div>
+      <p class="sub" id="bkStatus">上次備份：${esc(st.last)}　下次：${esc(st.next)}　${esc(st.freq)}</p>
+      <button type="button" class="btn" id="bkNow">⬇️ 立刻備份到這個資料夾</button>
+    </div>
+
     <h4 style="margin:22px 0 8px">變更密碼</h4>
     <div class="row3">
       <input class="mini-input" id="dOld" type="password" placeholder="目前密碼">
@@ -2080,13 +3076,27 @@ function ctData(el) {
     </div>
     <div class="danger-zone">
       <h4>🎓 新學年／換班級</h4>
-      <p class="sub">會先自動下載一份備份，然後清空：學生金幣與物種、任務打卡紀錄、聯絡簿、加扣分紀錄、班級山林等級、學生名單。<br>保留：學校名稱、作息表、每日任務、倒數日、密碼。接著會帶你設定新班級。</p>
+      <p class="sub">會先自動下載一份備份，然後清空：學生金幣與物種、任務打卡紀錄、聯絡簿、加扣分紀錄、班級山林等級、學生名單。<br>保留：學校名稱、作息表、每日任務、倒數日、我的音樂、密碼。接著會帶你設定新班級。</p>
       <button class="btn danger" id="dNewYear">開始新學年</button>
       <h4 style="margin-top:18px">完全重設</h4>
       <p class="sub">清除所有資料（包含密碼），回到第一次使用的狀態。</p>
       <button class="btn danger" id="dWipe">完全重設</button>
     </div>
     <div class="modal-actions"><button class="btn" id="dLogout">🔓 登出教師模式</button></div>`;
+
+  const refreshStatus = () => {
+    const c = backupCfg();
+    const s = backupStatusText(c);
+    const stEl = $('#bkStatus'); if (stEl) stEl.textContent = `上次備份：${s.last}　下次：${s.next}　${s.freq}`;
+    const fo = $('#bkFolder'); if (fo) fo.textContent = s.folder;
+  };
+  const saveBk = (patch, { reopen } = {}) => {
+    state.backup = { ...backupCfg(), ...patch };
+    if (!state.backup.time) state.backup.time = '15:00';
+    save();
+    if (reopen) openConsole('data');
+    else refreshStatus();
+  };
   $('#dExport').onclick = () => exportData();
   $('#dImport').onchange = e => {
     const f = e.target.files[0]; if (!f) return;
@@ -2095,17 +3105,70 @@ function ctData(el) {
       try {
         const d = JSON.parse(r.result);
         if (!d.settings || !d.students) throw new Error('格式不符');
-        if (!confirm(`要用備份檔「${f.name}」取代目前全部資料嗎？`)) return;
-        state = { ...defaults(), ...d, settings: { ...defaults().settings, ...d.settings } };
-        if (!Array.isArray(state.homework)) state.homework = [];
-        migrateTaskAnnounce(state);
-        migrateHomework(state);
-        setAuth();
-        save(); renderAll(); loadWeather(); toast('✅ 已匯入備份'); openConsole('data');
+        askConfirm(`要用備份檔「${f.name}」取代目前全部資料嗎？`, '還原').then(ok => {
+          if (!ok) return;
+          state = { ...defaults(), ...d, settings: { ...defaults().settings, ...d.settings } };
+          if (!Array.isArray(state.homework)) state.homework = [];
+          if (!state.ttOverrides || typeof state.ttOverrides !== 'object') state.ttOverrides = {};
+          state.backup = { ...DEFAULT_BACKUP, ...(d.backup || {}) };
+          state.music = normalizeMusic(d.music);
+          migrateTaskAnnounce(state);
+          migrateHomework(state);
+          setAuth();
+          stopMusic(); musicMissing.clear();
+          save(); renderAll(); renderMusic(); loadWeather();
+          const nFile = state.music.tracks.filter(t => t.kind === 'file').length;
+          if (nFile) {
+            toast(`✅ 已還原備份。備份只含音樂清單，不含音檔本身；有 ${nFile} 首本機音樂若顯示「請重新指定」，請重新選擇檔案`, 6000);
+            refreshMusicAvail();
+          } else toast('✅ 已還原備份');
+          openConsole('data');
+        });
       } catch (err) { toast('❌ 這不是正確的備份檔'); }
     };
     r.readAsText(f);
   };
+  $('#bkAuto').onchange = async () => {
+    if ($('#bkAuto').checked) {
+      if (!backupCfg().folderName) {
+        const handle = await pickBackupFolder();
+        if (!handle) { $('#bkAuto').checked = false; return; }
+      }
+      saveBk({ auto: true }, { reopen: true });
+      toast('✅ 已啟用自動備份（' + backupStatusText(backupCfg()).freq + '）');
+      maybeAutoBackup(true);
+    } else {
+      saveBk({ auto: false }, { reopen: true });
+      hideBackupBanner();
+      toast('已關閉自動備份，手動備份仍可使用');
+    }
+  };
+  $('#bkDaily') && ($('#bkDaily').onclick = () => saveBk({ freq: 'daily' }, { reopen: true }));
+  $('#bkWeekly') && ($('#bkWeekly').onclick = () => saveBk({ freq: 'weekly', weekdays: backupCfg().weekdays.length ? backupCfg().weekdays : [5] }, { reopen: true }));
+  $('#bkWds') && ($('#bkWds').onclick = e => {
+    const b = e.target.closest('[data-wd]'); if (!b) return;
+    const d = +b.dataset.wd;
+    let w = [...(backupCfg().weekdays || [])];
+    if (w.includes(d)) { if (w.length === 1) return toast('至少要選一天'); w = w.filter(x => x !== d); }
+    else w.push(d);
+    saveBk({ weekdays: w.sort((a, b) => a - b) }, { reopen: true });
+  });
+  $('#bkTime') && ($('#bkTime').onchange = () => saveBk({ time: $('#bkTime').value || '15:00' }));
+  $('#bkPick') && ($('#bkPick').onclick = async () => {
+    const handle = await pickBackupFolder();
+    if (handle) { refreshStatus(); const p = $('#bkPick'); if (p) p.textContent = '📁 更改資料夾'; toast('✅ 已指定資料夾「' + handle.name + '」'); }
+  });
+  $('#bkNow') && ($('#bkNow').onclick = async () => {
+    let handle = await idbGet('backupDir');
+    if (!handle) handle = await pickBackupFolder();
+    if (!handle) return;
+    try {
+      const name = await writeBackupToFolder(handle, '手動備份');
+      markBackupOk(name);
+      refreshStatus();
+      toast('✅ 已備份到「' + (backupCfg().folderName || handle.name) + '／' + name + '」', 3500);
+    } catch (err) { toast('❌ 寫入失敗，請重新選擇資料夾，或改用上方的下載備份'); }
+  });
   $('#dPw').onclick = async () => {
     if (await hashPw($('#dOld').value) !== state.settings.pwHash) return toast('目前密碼不正確');
     if ($('#dNew').value.length < 4) return toast('新密碼至少 4 碼');
@@ -2114,29 +3177,39 @@ function ctData(el) {
     $('#dOld').value = $('#dNew').value = '';
   };
   $('#dNewYear').onclick = () => {
-    if (!confirm('確定要開始新學年？目前班級的學生資料會被清空（會先下載備份）。')) return;
-    exportData('學年結束備份');
-    Object.assign(state, { students: {}, done: {}, contact: {}, homework: [], log: [], forest: { level: 1, points: 0 } });
-    Object.assign(state.settings, { names: {}, vacant: [], schoolYear: '', semester: '' });
-    save(); renderAll();
-    toast('✅ 已清空，請設定新班級資料', 3000);
-    openConsole('basic');
+    askConfirm('確定要開始新學年？目前班級的學生資料會被清空（會先下載備份）。', '開始新學年').then(ok => {
+      if (!ok) return;
+      exportData('學年結束備份');
+      Object.assign(state, { students: {}, done: {}, contact: {}, homework: [], log: [], forest: { level: 1, points: 0 }, ttOverrides: {} });
+      Object.assign(state.settings, { names: {}, vacant: [], schoolYear: '', semester: '' });
+      save(); renderAll();
+      toast('✅ 已清空，請設定新班級資料', 3000);
+      openConsole('basic');
+    });
   };
   $('#dWipe').onclick = () => {
-    if (!confirm('確定要清除「全部」資料嗎？此動作無法復原。')) return;
-    if (prompt('請輸入「確定重設」四個字') !== '確定重設') return;
-    localStorage.removeItem(KEY); sessionStorage.removeItem('jl-auth'); location.reload();
+    askConfirm('確定要清除「全部」資料嗎？此動作無法復原。', '下一步').then(ok => {
+      if (!ok) return;
+      const t = prompt('請輸入「確定重設」四個字');
+      if (t !== '確定重設') return;
+      stopMusic();
+      localStorage.removeItem(KEY); sessionStorage.removeItem('jl-auth');
+      state.music = normalizeMusic(null);
+      idbDelPrefix('music').finally(() => location.reload());
+    });
   };
   $('#dLogout').onclick = () => { lockNow(); closeModal(); toast('🔒 已上鎖'); };
 }
-function exportData(tag = '備份') {
-  const blob = new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' });
+function exportData(tag = '手動備份') {
+  const blob = new Blob([backupPayload()], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `班級儀表板_${state.settings.className}_${tag}_${dateKey()}.json`;
+  a.download = backupFileName(tag);
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast('✅ 已下載「' + backupFileName(tag) + '」');
 }
+
 
 /* ---------------- 其他按鈕 ---------------- */
 /* ---------------- 全螢幕（含 Google Sites iframe 後援） ---------------- */
@@ -2268,6 +3341,7 @@ function renderAll() {
 bindTabs('left');
 bindTabs('tool');
 renderAmbient();
+renderMusic();
 buildStars();
 updateSky();
 showTimer(); showPomo();
@@ -2278,14 +3352,16 @@ tick();
 setInterval(tick, 1000);
 loadWeather();
 if (!state.settings.setupDone) openSetup();
+setTimeout(() => { try { maybeAutoBackup(); } catch (_) {} }, 800);
+setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
 /* ---------------- 版本號 ----------------
  * 每次更新改這裡：主版號.次版號.修正號
  *   主版號：大改版（資料格式變動）
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.5.2';
-const APP_UPDATED = '2026-11-12';
+const APP_VERSION = '1.7.0';
+const APP_UPDATED = '2026-11-13';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
@@ -2300,6 +3376,11 @@ if (typeof globalThis !== 'undefined') {
     Fs: globalThis.__jlFs,
     
     APP_VERSION, askConfirm, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
+    normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop,
+    musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,
+    getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, getMusicMissing: () => [...musicMissing], musicMem,
+    isBackupDue, lastDueSlot, nextBackupAt, backupDays, backupCfg, backupFileName, backupPayload, DEFAULT_BACKUP, maybeAutoBackup,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
     setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
     getState: () => state, setState: (s) => { state = s; }

@@ -228,6 +228,39 @@ body.unlocked #consoleBtn { color: var(--gold); background: rgba(245,196,107,.15
 .amb-list .ai { font-size: 26px; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: rgba(0,0,0,.2); }
 .amb-list b { display: block; font-size: 15px; }
 .amb-list small { color: var(--muted); font-size: 12px; }
+.music { border-top: 1px solid var(--line); padding-top: 10px; margin: 0 0 10px; display: flex; flex-direction: column; gap: 8px; }
+.music-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+.music-head b { font-size: 15px; }
+.music-add { display: flex; gap: 6px; flex-wrap: wrap; }
+.music .btn { padding: 5px 10px; font-size: 13px; border-radius: 10px; }
+.music-url { display: flex; gap: 6px; }
+.music-url input { flex: 1; min-width: 0; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: rgba(0,0,0,.2); }
+.music-perm { border: 1px dashed var(--accent-2); background: rgba(95,184,160,.18); color: inherit; border-radius: 10px; padding: 7px 10px; font-size: 13px; text-align: left; }
+.music-perm:hover { background: rgba(95,184,160,.3); }
+.music-player { background: rgba(0,0,0,.18); border-radius: 12px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.music-now { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-prog { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.music-prog input { flex: 1; min-width: 0; }
+.music-ctrl { display: flex; justify-content: center; gap: 8px; }
+.music-ctrl button { border: 1px solid var(--line); background: rgba(255,255,255,.08); width: 36px; height: 32px; border-radius: 10px; font-size: 15px; display: grid; place-items: center; padding: 0; }
+.music-ctrl button:hover { background: rgba(255,255,255,.16); }
+.music-ctrl .mplay { background: var(--accent-2); border-color: transparent; color: #fff; width: 44px; }
+.music-ctrl button.active { border-color: var(--accent-2); }
+.music-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow: auto; }
+.music-list li { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; font-size: 13px; }
+.music-list li:hover { background: rgba(255,255,255,.07); }
+.music-list li.on { background: rgba(95,184,160,.3); border-color: var(--accent-2); }
+.music-list li.missing .mn b { opacity: .6; }
+.music-list .mi { width: 14px; color: var(--accent); flex: none; text-align: center; }
+.music-list .mn { flex: 1; min-width: 0; }
+.music-list .mn b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-list .mn small { display: block; color: #ffb3a7; font-size: 11px; }
+.music-list .mbadge { flex: none; font-size: 10px; padding: 1px 6px; border-radius: 99px; background: rgba(255,255,255,.12); color: var(--muted); }
+.music-list .mbadge.url { background: rgba(122,215,255,.18); }
+.music-list .mre { flex: none; border: 1px solid var(--accent-2); background: transparent; border-radius: 8px; font-size: 11px; padding: 2px 6px; }
+.music-list .mdel { flex: none; border: 0; background: transparent; color: var(--muted); opacity: .5; font-size: 14px; padding: 0 2px; }
+.music-list .mdel:hover { opacity: 1; color: #ff8a7a; }
+.music-empty { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .vol { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .vol input { flex: 1; }
 input[type=range] { accent-color: var(--accent); }
@@ -691,3 +724,30 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
 .ask-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .ask-actions button { min-width: 96px; padding: 10px 16px; font-size: 1rem; }
 .all-done-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* v1.6.0 臨時調課＋自動備份 */
+.sched-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.sched-actions .week-btn { margin-left: 0; }
+#adjustBtn.is-on { background: linear-gradient(135deg, #f0a14a, #e07a2f); color: #fff; border-color: transparent; font-weight: 700; }
+.sched-adj-note { margin: 4px 0 8px; font-size: 13px; color: #f0c07a; }
+.sched-list li.adj { outline: 1px dashed rgba(240,161,74,.55); }
+.adj-tag { display: inline-block; margin-left: 6px; font-style: normal; font-size: 11px; font-weight: 700; background: #f0a14a; color: #3a2208; border-radius: 99px; padding: 0 6px; line-height: 1.6; vertical-align: middle; }
+.week-table th.has-adj { color: #f0a14a; }
+.week-table td.adj { box-shadow: inset 0 0 0 1px rgba(240,161,74,.7); }
+.adj-head, .adj-row { display: grid; grid-template-columns: 110px 110px 1fr 1.3fr 36px; gap: 6px; align-items: center; }
+.adj-head { font-size: 12px; color: var(--muted); padding: 0 2px 4px; }
+.adj-rows { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; }
+.adj-row { background: rgba(255,255,255,.05); border-radius: 10px; padding: 4px; }
+.adj-row.changed { background: rgba(240,161,74,.18); }
+.adj-row input { width: 100%; min-width: 0; background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--text); }
+.adj-upcoming { margin: 12px 0 4px; }
+.adj-days { display: flex; flex-wrap: wrap; gap: 6px; }
+.adj-days .btn.active { background: var(--accent-2); }
+.bk-opts { background: rgba(255,255,255,.05); border-radius: 14px; padding: 12px 14px 16px; margin-bottom: 8px; }
+.bk-opts .btn.active, #bkWds .btn.active { background: var(--accent-2); font-weight: 700; }
+.backup-banner { position: fixed; bottom: 72px; left: 50%; transform: translateX(-50%); z-index: 150; display: none; align-items: center; gap: 12px; background: rgba(30,30,50,.96); color: #fff; padding: 12px 18px; border-radius: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.35); max-width: 92vw; flex-wrap: wrap; }
+.backup-banner .bb-msg { line-height: 1.5; }
+@media (max-width: 700px) {
+  .adj-head, .adj-row { grid-template-columns: 1fr 1fr; }
+  .adj-row button[data-del] { grid-column: 2; justify-self: end; }
+}

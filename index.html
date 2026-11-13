@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
 <link rel="icon" href="images/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png" sizes="180x180">
-<link rel="stylesheet" href="css/style.css?v=1.5.2">
+<link rel="stylesheet" href="css/style.css?v=1.7.0">
 </head>
 <body>
 
@@ -107,7 +107,13 @@
             <button data-tab="countdown">倒數日</button>
           </div>
           <div class="tab-body" data-body="schedule">
-            <div class="label sched-head">SCHEDULE <span id="schedDate"></span><button id="weekBtn" class="week-btn">📅 整週課表</button></div>
+            <div class="label sched-head">SCHEDULE <span id="schedDate"></span>
+              <span class="sched-actions">
+                <button type="button" id="adjustBtn" class="week-btn" title="只改今天或指定某一天的課表，不更動平常的週課表">🔄 今日調課</button>
+                <button type="button" id="weekBtn" class="week-btn">📅 整週課表</button>
+              </span>
+            </div>
+            <p id="schedAdjNote" class="sched-adj-note" style="display:none"></p>
             <div id="nowPeriod" class="now-period"></div>
             <ul id="schedList" class="sched-list"></ul>
           </div>
@@ -229,6 +235,34 @@
           <div class="panel glass ambient">
             <div class="label">AMBIENT 環境音</div>
             <ul id="ambList" class="amb-list"></ul>
+            <div class="music" id="musicBox">
+              <div class="music-head">
+                <b>🎵 我的音樂</b>
+                <div class="music-add">
+                  <button type="button" class="btn" id="musicAddFile" title="從這台電腦選音樂檔（可一次選多首）">📁 上傳檔案</button>
+                  <button type="button" class="btn" id="musicAddUrl" title="貼上 mp3 等音樂檔的網址">🔗 加入網址</button>
+                </div>
+              </div>
+              <div class="music-url" id="musicUrlRow" style="display:none">
+                <input type="url" id="musicUrlInput" class="mini-input" placeholder="https://…/song.mp3" autocomplete="off">
+                <button type="button" class="btn" id="musicUrlOk">加入</button>
+              </div>
+              <button type="button" class="music-perm" id="musicPerm" style="display:none">🔓 點一下以使用本機音樂檔</button>
+              <div class="music-player">
+                <div class="music-now" id="musicNow">尚未播放</div>
+                <div class="music-prog"><span id="musicCur">0:00</span><input type="range" id="musicSeek" min="0" max="1000" value="0" aria-label="播放進度"><span id="musicDur">0:00</span></div>
+                <div class="music-ctrl">
+                  <button type="button" id="musicPrev" title="上一首">⏮</button>
+                  <button type="button" id="musicPlay" class="mplay" title="播放">▶</button>
+                  <button type="button" id="musicNext" title="下一首">⏭</button>
+                  <button type="button" id="musicLoop" title="清單循環">🔁</button>
+                </div>
+              </div>
+              <ul class="music-list" id="musicList"></ul>
+              <p class="music-empty" id="musicEmpty">還沒有自己的音樂。可以上傳電腦裡的檔案，或貼上音樂網址。</p>
+              <input type="file" id="musicFileInput" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.webm" multiple hidden>
+              <audio id="musicAudio" preload="metadata"></audio>
+            </div>
             <label class="vol">音量 <input type="range" id="ambVol" min="0" max="100" value="50"></label>
           </div>
         </div>
@@ -363,6 +397,6 @@
 
 <script src="js/species.js"></script>
 <script src="js/voiceFilter.js"></script>
-<script src="js/app.js?v=1.5.2"></script>
+<script src="js/app.js?v=1.7.0"></script>
 </body>
 </html>
