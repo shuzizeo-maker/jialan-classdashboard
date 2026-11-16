@@ -61,11 +61,16 @@ function defaults() {
       vacant: [],
       names: {},
       pwHash: '',
+      mode: 'single', // single＝導師（一個班）；multi＝科任老師（多個班）
+      autoSwitch: true, // 多班級：上課時間到依週課表自動切換班級
       loc: { name: '臺東縣 金峰鄉', lat: 22.60, lon: 120.96, source: 'openmeteo', cwaKey: '', cwaDataset: 'F-D0047-037', cwaTown: '金峰鄉' }
     },
     schedule: DEFAULT_SCHEDULE.map(r => ({ ...r })),
     timetable: {}, // { 1: { p1: '國語', ... }, ... 5: {...} }，1=星期一
-    ttOverrides: {}, // { '2026-11-13': { periods:[{start,end,name,slot,subject}], note } }
+    ttOverrides: {}, // { '2026-11-13': { periods:[{start,end,name,slot,subject,classId?}], note } }
+    ttClass: {}, // 多班級：週課表每一格是哪一班 { 1: { p3: 'c_xxx' } }
+    classes: [], // 多班級：[{ id, name, subject, data }]，目前班級的 data 為 null（資料在最上層）
+    curClass: '',
     backup: { auto: false, freq: 'daily', weekdays: [5], time: '15:00', lastAt: '', lastName: '', lastError: '', folderName: '' },
     music: { tracks: [], loop: 'all', currentId: '' }, // 我的音樂：只存清單，音檔本身留在電腦
     contact: {},
@@ -89,8 +94,14 @@ function defaults() {
 function load() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return defaults();
-    const d = defaults(), s = JSON.parse(raw);
+    if (!raw) return ensureClasses(defaults());
+    return normalizeState(JSON.parse(raw));
+  } catch (e) { console.warn(e); return ensureClasses(defaults()); }
+}
+// 把讀進來的資料（localStorage 或備份檔）補齊欄位、跑舊版轉換
+function normalizeState(s) {
+  {
+    const d = defaults();
     // 舊版作息表沒有「節次」欄位，依名稱推算
     (s.schedule || []).forEach(r => { if (r.slot === undefined) r.slot = inferSlot(r.name); });
     // 舊版把「115學年度第一學期」整串放在學年度，拆成學年度＋學期
@@ -100,8 +111,96 @@ function load() {
     if (!Array.isArray(merged.homework)) merged.homework = [];
     migrateTaskAnnounce(merged);
     migrateHomework(merged);
-    return merged;
-  } catch (e) { console.warn(e); return defaults(); }
+    return ensureClasses(merged);
+  }
+}
+
+/* ---------------- 多班級（科任老師）資料層 ----------------
+ * 目前班級的資料直接放在 state 最上層（欄位與 v1.7 完全相同，其他功能不用改）；
+ * 其他班級的資料收在 state.classes[i].data，切換班級時互相交換。
+ * 每班各自：學生名單（最大座號、空號、姓名）、金幣／物種／山林、每日任務與打卡、
+ *           聯絡簿、作業檢查、加扣分紀錄、跑馬燈公告、班級名稱、任務選擇。
+ * 全部共用：校名、學年學期、作息時間、週課表（含班級標記）、臨時調課、倒數日、
+ *           天氣、環境音、我的音樂、備份設定、密碼、主題。
+ */
+const CLASS_KEYS = ['students', 'done', 'contact', 'homework', '_hwMigrated', 'forest', 'log', 'taskDefs'];
+const CLASS_SETTINGS = ['className', 'maxSeat', 'vacant', 'names', 'announcement'];
+const CLASS_UI = ['widgetTask', 'pageTask'];
+const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
+function freshClassData(name, { maxSeat = 20, vacant = [], taskDefs } = {}) {
+  return {
+    students: {}, done: {}, contact: {}, homework: [], _hwMigrated: true,
+    forest: { level: 1, points: 0 }, log: [],
+    taskDefs: clone(taskDefs || defaults().taskDefs),
+    settings: { className: String(name || ''), maxSeat: Number(maxSeat) || 20, vacant: [...(vacant || [])], names: {}, announcement: '' },
+    ui: { widgetTask: '', pageTask: '' }
+  };
+}
+// 從最上層取出目前班級的資料
+function pickClassData(st) {
+  const o = { settings: {}, ui: {} };
+  CLASS_KEYS.forEach(k => { o[k] = st[k]; });
+  CLASS_SETTINGS.forEach(k => { o.settings[k] = st.settings[k]; });
+  CLASS_UI.forEach(k => { o.ui[k] = st.ui ? st.ui[k] : ''; });
+  return o;
+}
+// 把某班的資料放到最上層（缺的欄位用空白班級補）
+function putClassData(st, data) {
+  const f = freshClassData(data?.settings?.className || '');
+  data = data && typeof data === 'object' ? data : {};
+  const ds = data.settings && typeof data.settings === 'object' ? data.settings : {};
+  CLASS_KEYS.forEach(k => { st[k] = data[k] !== undefined ? data[k] : f[k]; });
+  CLASS_SETTINGS.forEach(k => { st.settings[k] = ds[k] !== undefined ? ds[k] : f.settings[k]; });
+  st.ui ||= {};
+  CLASS_UI.forEach(k => { st.ui[k] = (data.ui && data.ui[k]) || ''; });
+  if (!st.students || typeof st.students !== 'object') st.students = {};
+  if (!st.done || typeof st.done !== 'object') st.done = {};
+  if (!st.contact || typeof st.contact !== 'object') st.contact = {};
+  if (!Array.isArray(st.homework)) st.homework = [];
+  if (!Array.isArray(st.log)) st.log = [];
+  if (!Array.isArray(st.taskDefs)) st.taskDefs = f.taskDefs;
+  st.forest = { level: 1, points: 0, ...(st.forest || {}) };
+  if (!Array.isArray(st.settings.vacant)) st.settings.vacant = [];
+  if (!st.settings.names || typeof st.settings.names !== 'object') st.settings.names = {};
+  st.settings.maxSeat = Number(st.settings.maxSeat) || 20;
+  migrateTaskAnnounce(st);
+  migrateHomework(st);
+}
+// 確保有班級清單：舊版（只有一個班）的資料自動變成第一個班，資料完全不動
+function ensureClasses(st) {
+  st.settings ||= {};
+  st.settings.mode = st.settings.mode === 'multi' ? 'multi' : 'single';
+  if (typeof st.settings.autoSwitch !== 'boolean') st.settings.autoSwitch = true;
+  if (!st.ttClass || typeof st.ttClass !== 'object' || Array.isArray(st.ttClass)) st.ttClass = {};
+  const seen = new Set();
+  let list = (Array.isArray(st.classes) ? st.classes : [])
+    .filter(c => c && typeof c === 'object' && c.id && !seen.has(String(c.id)) && seen.add(String(c.id)))
+    .map(c => ({
+      id: String(c.id),
+      name: String(c.name || c.data?.settings?.className || '').trim() || '未命名班級',
+      subject: String(c.subject || '').trim(),
+      data: c.data && typeof c.data === 'object' ? c.data : null
+    }));
+  if (!list.length) list = [{ id: 'c' + uid(), name: String(st.settings.className || '').trim() || '我的班級', subject: '', data: null }];
+  const cur = list.find(c => c.id === st.curClass) || list.find(c => !c.data) || list[0];
+  cur.data = null; // 目前班級的資料在最上層
+  if (String(st.settings.className || '').trim()) cur.name = String(st.settings.className).trim();
+  else st.settings.className = cur.name;
+  list.forEach(c => {
+    if (c === cur) return;
+    if (!c.data) c.data = freshClassData(c.name);
+    c.data.settings = { ...(c.data.settings || {}), className: c.name };
+  });
+  st.classes = list;
+  st.curClass = cur.id;
+  // 單班模式卻有好幾班（不應發生）→ 改成多班級模式，避免資料被藏起來
+  if (list.length > 1) st.settings.mode = 'multi';
+  return st;
+}
+// 匯入備份檔（舊版只有一個班、新版含所有班級都可以）
+function importBackupData(d) {
+  if (!d || typeof d !== 'object' || !d.settings || !d.students) throw new Error('格式不符');
+  return normalizeState(clone(d));
 }
 // 舊資料沒有 announce 欄位時：名稱含「訂正」的任務預設顯示在公告，其餘不顯示
 function migrateTaskAnnounce(st) {
@@ -465,6 +564,7 @@ function nextLoopMode(loop) { return ({ off: 'one', one: 'all', all: 'off' })[lo
 let state = load();
 let saveTimer;
 function save() {
+  syncCurClassName();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try { localStorage.setItem(KEY, JSON.stringify(state)); }
@@ -485,8 +585,163 @@ const classSpecies = () => {
   return set;
 };
 
+/* ---------------- 多班級：切換與自動換班 ---------------- */
+const isMulti = () => state.settings.mode === 'multi';
+const classList = () => Array.isArray(state.classes) ? state.classes : [];
+const curClassObj = () => classList().find(c => c.id === state.curClass) || null;
+const classById = id => classList().find(c => c.id === id) || null;
+const classLabel = c => c ? (c.subject ? `${c.name} ${c.subject}` : c.name) : '';
+function syncCurClassName() {
+  const c = curClassObj();
+  if (c && String(state.settings.className || '').trim()) c.name = String(state.settings.className).trim();
+}
+// 抽號紀錄：每班分開（只存在這次開啟期間，跟原本一樣重新整理就清空）
+let drawnBy = {};
+let autoKey = null; // 目前「節次」的識別；只有換節（或剛打開）時才會自動切換
+function periodAt(d = new Date()) {
+  const now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+  return todaySchedule(d).find(r => toMin(r.start) <= now && now < toMin(r.end)) || null;
+}
+function periodKey(d = new Date()) {
+  const p = periodAt(d);
+  return p ? `${dateKey(d)}|${p.start}|${p.end}|${p.name}|${p.classId || ''}` : `${dateKey(d)}|none`;
+}
+function modalBusy() {
+  const m = document.getElementById('modal');
+  const ask = document.getElementById('askConfirm');
+  return !!((m && !m.classList.contains('hidden')) || (ask && ask.style.display === 'flex'));
+}
+/** 切換目前班級。opt.auto：依課表自動切換；opt.now：手動切換的時間（測試用） */
+function switchClass(id, { auto = false, period = '', silent = false, now } = {}) {
+  const target = classById(id);
+  if (!target) return false;
+  if (!auto) autoKey = periodKey(now || new Date()); // 手動切換：這一節內不再被自動切回去
+  if (id === state.curClass) return false;
+  const cur = curClassObj();
+  if (cur) {
+    drawnBy[cur.id] = drawn;
+    syncCurClassName();
+    cur.data = pickClassData(state);
+  }
+  putClassData(state, target.data);
+  target.data = null;
+  state.settings.className = target.name;
+  state.curClass = target.id;
+  drawn = drawnBy[target.id] || [];
+  weekDraft = null;
+  save();
+  refreshDrawUI();
+  const pop = $('#classPop'); if (pop) pop.style.display = 'none';
+  renderAll();
+  if (!silent) toast(auto ? `已切換到 ${classLabel(target)}${period ? `（${period}）` : ''}` : `已切換到 ${classLabel(target)}`, auto ? 3500 : 2200);
+  return true;
+}
+/** 每秒檢查：換節或剛打開時，若這節有標班級就自動切過去 */
+function checkAutoSwitch(d = new Date()) {
+  if (!state.settings.setupDone || !isMulti()) return null;
+  const key = periodKey(d);
+  if (key === autoKey) return null;
+  if (modalBusy()) return null; // 老師正在對話框裡編輯，先不切，關掉後再切
+  autoKey = key;
+  if (state.settings.autoSwitch === false) return null;
+  const p = periodAt(d);
+  if (!p || !p.classId || !classById(p.classId) || p.classId === state.curClass) return null;
+  switchClass(p.classId, { auto: true, period: p.name });
+  return p.classId;
+}
+function refreshDrawUI() {
+  const num = $('#drawNum'); if (!num) return;
+  const last = drawn[drawn.length - 1];
+  num.textContent = last ? pad(last) : '?';
+  const nm = $('#drawName'); if (nm) nm.textContent = last ? (nameOf(last) || `${last} 號`) : '按下按鈕抽一位幸運兒';
+  const h = $('#drawHistory'); if (h) h.textContent = drawn.length ? '已抽：' + drawn.map(pad).join('、') : '';
+}
+// 首頁「換班級」按鈕：多班級且有 2 班以上才顯示
+function renderClassSwitch() {
+  const wrap = $('#classSwitch'); if (!wrap) return;
+  const show = isMulti() && classList().length >= 2;
+  wrap.style.display = show ? '' : 'none';
+  const pop = $('#classPop');
+  if (pop && (!show || pop.style.display === 'none')) { if (!show) pop.style.display = 'none'; return; }
+  if (pop) drawClassPop();
+}
+function drawClassPop() {
+  const pop = $('#classPop'); if (!pop) return;
+  pop.innerHTML = `<div class="cp-title">切換班級</div>` + classList().map(c => {
+    const on = c.id === state.curClass;
+    const max = on ? state.settings.maxSeat : c.data?.settings?.maxSeat;
+    const vac = (on ? state.settings.vacant : c.data?.settings?.vacant) || [];
+    const n = Math.max(0, (Number(max) || 0) - vac.filter(v => v >= 1 && v <= max).length);
+    return `<button type="button" class="cp-item${on ? ' active' : ''}" data-cls="${esc(c.id)}"><b>${esc(c.name)}</b>${c.subject ? `<small>${esc(c.subject)}</small>` : ''}<em>${on ? '目前' : n + ' 人'}</em></button>`;
+  }).join('') + `<p class="cp-hint">${state.settings.autoSwitch !== false ? '上課時間到，會依週課表自動切換。' : '自動切換已關閉（教師控制台 → 班級管理）。'}</p>`;
+}
+document.addEventListener('click', e => {
+  const btn = e.target.closest('#classSwitchBtn');
+  const pop = $('#classPop');
+  if (btn) {
+    if (!pop) return;
+    const show = pop.style.display === 'none';
+    if (show) drawClassPop();
+    pop.style.display = show ? '' : 'none';
+    return;
+  }
+  const it = e.target.closest('#classPop [data-cls]');
+  if (it) { pop.style.display = 'none'; switchClass(it.dataset.cls); return; }
+  if (pop && pop.style.display !== 'none' && !e.target.closest('#classSwitch')) pop.style.display = 'none';
+});
+// 新學年：每一班的學生資料都清空，班級清單、週課表與班級標記保留
+function newYearReset() {
+  const clear = () => ({ students: {}, done: {}, contact: {}, homework: [], log: [], forest: { level: 1, points: 0 } });
+  Object.assign(state, clear(), { ttOverrides: {} });
+  Object.assign(state.settings, { names: {}, vacant: [], schoolYear: '', semester: '' });
+  classList().forEach(c => {
+    if (!c.data) return;
+    Object.assign(c.data, clear());
+    c.data.settings = { ...(c.data.settings || {}), names: {}, vacant: [] };
+  });
+  drawnBy = {}; drawn = []; weekDraft = null;
+  refreshDrawUI();
+}
+// 刪除班級（目前班級要先切走）；週課表與調課裡標這班的格子改回不指定
+function deleteClass(id) {
+  const list = classList();
+  if (list.length <= 1) return false;
+  const c = classById(id); if (!c) return false;
+  if (id === state.curClass) {
+    const other = list.find(x => x.id !== id);
+    switchClass(other.id, { silent: true });
+  }
+  state.classes = list.filter(x => x.id !== id);
+  Object.values(state.ttClass || {}).forEach(day => Object.keys(day || {}).forEach(k => { if (day[k] === id) delete day[k]; }));
+  Object.values(state.ttOverrides || {}).forEach(ov => (ov.periods || []).forEach(p => { if (p.classId === id) delete p.classId; }));
+  delete drawnBy[id];
+  save();
+  return true;
+}
+function addClass(name, { subject = '', maxSeat = 20, vacant = [] } = {}) {
+  const nm = String(name || '').trim();
+  if (!nm) return null;
+  const c = { id: 'c' + uid(), name: nm, subject: String(subject || '').trim(), data: freshClassData(nm, { maxSeat, vacant, taskDefs: state.taskDefs }) };
+  classList().push(c);
+  save();
+  return c;
+}
+function moveClass(id, dir) {
+  const list = classList(), i = list.findIndex(c => c.id === id), j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return false;
+  [list[i], list[j]] = [list[j], list[i]];
+  save();
+  return true;
+}
+function setClassMode(mode) {
+  if (mode === 'single' && classList().length > 1) return false;
+  state.settings.mode = mode === 'multi' ? 'multi' : 'single';
+  save();
+  return true;
+}
+
 // 自製確認視窗：不用瀏覽器 confirm()，避免被嵌入框架（如 Google 協作平台）或瀏覽器擋掉
-function askConfirm(msg, okText = '確定') {
+function askConfirm(msg, okText = '確定', opt = {}) {
   return new Promise(resolve => {
     let ov = document.getElementById('askConfirm');
     if (!ov) {
@@ -498,6 +753,7 @@ function askConfirm(msg, okText = '確定') {
     }
     ov.querySelector('.ask-msg').textContent = msg;
     ov.querySelector('.ask-yes').textContent = okText;
+    ov.querySelector('.ask-yes').classList.toggle('danger', !!opt.danger);
     ov.style.display = 'flex';
     const done = v => { ov.style.display = 'none'; ov.onclick = null; resolve(v); };
     ov.onclick = e => {
@@ -607,8 +863,11 @@ function renderHeader() {
   const s = state.settings;
   const term = termText();
   $('#schoolName').textContent = s.school + (term ? `　${term}` : '');
-  $('#className').textContent = s.className;
-  document.title = `${s.className}｜班級儀表板`;
+  const cc = isMulti() ? curClassObj() : null;
+  if (cc && cc.subject) $('#className').innerHTML = `${esc(s.className)} <small class="cls-subj">${esc(cc.subject)}</small>`;
+  else $('#className').textContent = s.className;
+  document.title = `${cc ? classLabel({ name: s.className, subject: cc.subject }) : s.className}｜班級儀表板`;
+  renderClassSwitch();
   const seats = activeSeats();
   const parts = buildAnnParts(withClassName(s.announcement, s.school, s.className), state.taskDefs, seats, todayDone(), state.homework, state.countdowns);
   const text = parts.length ? parts.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
@@ -672,8 +931,29 @@ function regularSchedule(d = new Date()) {
   const wd = d.getDay(), wdc = WEEK[wd], tt = dayTT(wd), useTT = hasTT(wd);
   return state.schedule
     .filter(r => r.slot ? (useTT ? !!String(tt[r.slot] || '').trim() : (r.days || '').includes(wdc)) : (!r.days || r.days.includes(wdc)))
-    .map(r => ({ start: r.start, end: r.end, name: r.name, slot: r.slot || '', subject: r.slot ? String(tt[r.slot] || '').trim() : '' }))
+    .map(r => {
+      const o = { start: r.start, end: r.end, name: r.name, slot: r.slot || '', subject: r.slot ? String(tt[r.slot] || '').trim() : '' };
+      const cid = r.slot && useTT ? ttClassOf(wd, r.slot) : '';
+      if (cid) o.classId = cid;
+      return o;
+    })
     .sort((a, b) => toMin(a.start) - toMin(b.start));
+}
+// 多班級：週課表某一格標記的班級 id
+function ttClassOf(wd, slot) { return String((state.ttClass && state.ttClass[wd] && state.ttClass[wd][slot]) || ''); }
+function classOnDate(d, slot) {
+  const ov = getOverride(d);
+  if (ov && Array.isArray(ov.periods)) {
+    const p = ov.periods.find(r => r.slot === slot);
+    return p ? String(p.classId || '') : '';
+  }
+  return ttClassOf(d.getDay(), slot);
+}
+// 畫面上顯示的班級小標籤（只在多班級模式）
+function clsTag(id, cls = 'cls-tag') {
+  if (!id || !isMulti()) return '';
+  const c = classById(id);
+  return c ? `<i class="${cls}">${esc(c.name)}</i>` : '';
 }
 function parseDk(dk) {
   const [y, m, da] = String(dk).split('-').map(Number);
@@ -690,10 +970,14 @@ function getOverride(d) {
 }
 function applyDayOverride(dk, periods, note = '') {
   (state.ttOverrides ||= {})[dk] = {
-    periods: (periods || []).map(r => ({
-      start: r.start, end: r.end, name: String(r.name || '').trim(),
-      slot: r.slot || inferSlot(r.name) || '', subject: String(r.subject || '').trim()
-    })),
+    periods: (periods || []).map(r => {
+      const o = {
+        start: r.start, end: r.end, name: String(r.name || '').trim(),
+        slot: r.slot || inferSlot(r.name) || '', subject: String(r.subject || '').trim()
+      };
+      if (r.classId) o.classId = String(r.classId);
+      return o;
+    }),
     note: String(note || '').trim()
   };
   return state.ttOverrides[dk];
@@ -713,7 +997,7 @@ function todaySchedule(d = new Date()) {
 function periodChanged(r, base) {
   const b = (base || []).find(x => (r.slot && x.slot === r.slot) || (x.name === r.name && x.start === r.start));
   if (!b) return true;
-  return b.subject !== r.subject || b.start !== r.start || b.end !== r.end || b.name !== r.name;
+  return b.subject !== r.subject || b.start !== r.start || b.end !== r.end || b.name !== r.name || (b.classId || '') !== (r.classId || '');
 }
 function dateOfWeekday(wd, from = new Date()) {
   const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
@@ -734,6 +1018,9 @@ function subjectOnDate(d, slot) {
 }
 
 const periodLabel = r => r.subject ? `${r.name}・${r.subject}` : r.name;
+function classOptions(sel = '') {
+  return `<option value="">不指定班級</option>` + classList().map(c => `<option value="${esc(c.id)}"${c.id === sel ? ' selected' : ''}>${esc(classLabel(c))}</option>`).join('');
+}
 const periodHTML = r => r.subject ? `${esc(r.subject)} <small class="np-slot">${esc(r.name)}</small>` : esc(r.name);
 function renderSchedule() {
   const d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
@@ -768,16 +1055,16 @@ function renderSchedule() {
     else if (now >= s) { cls = 'now'; cur = r; }
     else if (!next) next = r;
     const ch = ov && periodChanged(r, base);
-    return `<li class="${cls}${ch ? ' adj' : ''}"><span>${r.start}–${r.end}</span><span>${r.subject ? `<small class="sl-slot">${esc(r.name)}</small> <b>${esc(r.subject)}</b>` : esc(r.name)}${ch ? '<i class="adj-tag">調</i>' : ''}</span></li>`;
+    return `<li class="${cls}${ch ? ' adj' : ''}"><span>${r.start}–${r.end}</span><span>${r.subject ? `<small class="sl-slot">${esc(r.name)}</small> <b>${esc(r.subject)}</b>` : esc(r.name)}${clsTag(r.classId)}${ch ? '<i class="adj-tag">調</i>' : ''}</span></li>`;
   }).join('');
   if (cur) {
     const left = Math.max(0, toMin(cur.end) - now);
-    box.innerHTML = `<div class="np-sub">現在是</div><div class="np-name">${periodHTML(cur)}</div>
+    box.innerHTML = `<div class="np-sub">現在是</div><div class="np-name">${periodHTML(cur)}${clsTag(cur.classId)}</div>
       <div class="np-sub">還有 ${Math.floor(left)} 分 ${pad(Math.floor((left % 1) * 60))} 秒${next ? `・下一節：${esc(periodLabel(next))}` : ''}</div>
       <div class="bar"><i style="width:${(now - toMin(cur.start)) / (toMin(cur.end) - toMin(cur.start)) * 100}%"></i></div>`;
   } else if (next) {
     const left = toMin(next.start) - now;
-    box.innerHTML = `<div class="np-sub">下課／休息中</div><div class="np-name">下一節：${periodHTML(next)}</div>
+    box.innerHTML = `<div class="np-sub">下課／休息中</div><div class="np-name">下一節：${periodHTML(next)}${clsTag(next.classId)}</div>
       <div class="np-sub">${next.start} 開始，還有 ${Math.ceil(left)} 分鐘</div>`;
   } else {
     box.innerHTML = `<div class="np-name">今天的課程結束了 🎒</div><div class="np-sub">路上小心，明天見！</div>`;
@@ -803,11 +1090,13 @@ function weekTableHTML() {
       const v = subjectOnDate(dates[w], s);
       const orig = String(dayTT(w)[s] || '').trim();
       const ch = ov && v !== orig;
-      return `<td class="${w === today ? 'today' : ''} ${w === today && s === curSlot ? 'now' : ''} ${v ? '' : 'none'}${ch ? ' adj' : ''}">${esc(v) || '—'}${ch ? '<i class="adj-tag">調</i>' : ''}</td>`;
+      const cid = v ? classOnDate(dates[w], s) : '';
+      const chC = ov && cid !== ttClassOf(w, s);
+      return `<td class="${w === today ? 'today' : ''} ${w === today && s === curSlot ? 'now' : ''} ${v ? '' : 'none'}${ch || chC ? ' adj' : ''}">${esc(v) || '—'}${clsTag(cid, 'cls-tag blk')}${ch || chC ? '<i class="adj-tag">調</i>' : ''}</td>`;
     }).join('')}</tr>`).join('')}</tbody></table>`;
 }
 $('#weekBtn') && ($('#weekBtn').onclick = () => openModal(`<button class="close" data-close>✕</button>
-  <h2>📅 ${esc(state.settings.className)} 週課表</h2><p class="sub">${esc(termText())}　今天的欄位以綠色標示，正在上的課會發亮。本週有調課的日子會標上「調」。</p>
+  <h2>📅 ${isMulti() ? '我的' : esc(state.settings.className) + ' '}週課表</h2><p class="sub">${esc(termText())}　今天的欄位以綠色標示，正在上的課會發亮。本週有調課的日子會標上「調」。</p>
   ${weekTableHTML()}`, { wide: true }));
 $('#adjustBtn') && ($('#adjustBtn').onclick = () => openAdjustModal());
 let _afterUnlock = null;
@@ -835,7 +1124,7 @@ function openAdjustModal(initDate) {
       <div class="field"><span>原因（選填，會顯示在作息表上）</span><input id="adjNote" placeholder="例如：因運動會彩排，一、二節對調" value="${esc(note)}"></div>
     </div>
     <p class="sub" id="adjBaseHint"></p>
-    <div class="adj-head"><span>開始</span><span>結束</span><span>節次</span><span>科目</span><span></span></div>
+    <div class="adj-head${isMulti() ? ' multi' : ''}"><span>開始</span><span>結束</span><span>節次</span><span>科目</span>${isMulti() ? '<span>班級</span>' : ''}<span></span></div>
     <div id="adjRows" class="adj-rows"></div>
     <div class="btn-row" style="justify-content:flex-start;margin:10px 0">
       <button type="button" class="btn" id="adjAdd">＋ 加一節</button>
@@ -853,7 +1142,8 @@ function openAdjustModal(initDate) {
       end: $('[data-k=end]', er).value,
       name: $('[data-k=name]', er).value.trim(),
       slot: er.dataset.slot || inferSlot($('[data-k=name]', er).value) || '',
-      subject: $('[data-k=subject]', er).value.trim()
+      subject: $('[data-k=subject]', er).value.trim(),
+      classId: $('[data-k=classId]', er) ? $('[data-k=classId]', er).value : (rows[+er.dataset.i]?.classId || '')
     }));
     note = $('#adjNote').value;
   };
@@ -866,11 +1156,12 @@ function openAdjustModal(initDate) {
     $('#adjNote').value = note;
     $('#adjRows').innerHTML = rows.map((r, i) => {
       const ch = periodChanged(r, base);
-      return `<div class="adj-row${ch ? ' changed' : ''}" data-i="${i}" data-slot="${esc(r.slot || '')}">
+      return `<div class="adj-row${isMulti() ? ' multi' : ''}${ch ? ' changed' : ''}" data-i="${i}" data-slot="${esc(r.slot || '')}">
         <input type="time" data-k="start" value="${esc(r.start || '')}">
         <input type="time" data-k="end" value="${esc(r.end || '')}">
         <input data-k="name" value="${esc(r.name || '')}" placeholder="第一節">
         <input data-k="subject" value="${esc(r.subject || '')}" placeholder="科目（空白=該節沒課）" list="adjSubjects">
+        ${isMulti() ? `<select data-k="classId" title="這節是哪一班">${classOptions(r.classId)}</select>` : ''}
         <button type="button" data-del="${i}" title="刪除這節">✕</button>
       </div>`;
     }).join('') || '<p class="hint">還沒有節次。按「＋ 加一節」，或「從原課表重新載入」。</p>';
@@ -896,7 +1187,7 @@ function openAdjustModal(initDate) {
     const start = last?.end || '15:00';
     const endMin = toMin(start) + 40;
     const end = `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}`;
-    rows.push({ start, end, name: '', slot: '', subject: '' });
+    rows.push({ start, end, name: '', slot: '', subject: '', classId: '' });
     draw();
   };
   $('#adjReload').onclick = () => {
@@ -922,7 +1213,7 @@ function openAdjustModal(initDate) {
     const periods = rows.filter(r => r.start && r.end && r.name);
     const base = regularSchedule(parseDk(dk));
     const same = !note.trim() && periods.length === base.length &&
-      periods.every((r, i) => r.start === base[i].start && r.end === base[i].end && r.name === base[i].name && r.subject === base[i].subject);
+      periods.every((r, i) => r.start === base[i].start && r.end === base[i].end && r.name === base[i].name && r.subject === base[i].subject && (r.classId || '') === (base[i].classId || ''));
     if (same) {
       clearDayOverride(dk);
       save(); renderSchedule(); tick(); closeModal();
@@ -1095,8 +1386,10 @@ function tick() {
   $('#bigClock').innerHTML = `${hh}:${mm}<span>${ss}</span>`;
   updateLockUI();
   $('#wDate').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日　星期${WEEK[d.getDay()]}`;
+  try { checkAutoSwitch(d); } catch (e) { console.warn(e); }
   const cur = renderSchedule();
-  const sub = cur ? (toMin(cur.start) <= d.getHours() * 60 + d.getMinutes() ? `現在：${periodLabel(cur)}` : `下一節：${periodLabel(cur)}（${cur.start}）`) : `星期${WEEK[d.getDay()]}`;
+  const cc = cur && isMulti() && cur.classId ? classById(cur.classId) : null;
+  const sub = cur ? (toMin(cur.start) <= d.getHours() * 60 + d.getMinutes() ? `現在：${periodLabel(cur)}` : `下一節：${periodLabel(cur)}（${cur.start}）`) + (cc ? `・${cc.name}` : '') : `星期${WEEK[d.getDay()]}`;
   $('#clockSub').textContent = sub;
   if (document.body.classList.contains('clean')) {
     $('#cleanClock').innerHTML = `<div class="cc-time">${hh}:${mm}</div><div class="cc-sub">${esc(state.settings.className)}・${esc(sub)}</div><div class="cc-hint">點一下畫面回到儀表板</div>`;
@@ -2442,7 +2735,20 @@ function seatSummary(max, vac) {
   const v = parseVacant(vac).filter(n => n >= 1 && n <= max);
   return `座號 01～${pad(max)}，實際 <b>${max - v.length}</b> 人`;
 }
-function openSetup() {
+// 第一次設定：先選身分（導師一個班／科任老師多個班）
+function openSetup(role) {
+  if (role === 'multi') return openSetupMulti();
+  if (role !== 'single') {
+    openModal(`
+      <h2>🌄 歡迎使用班級儀表板</h2>
+      <p class="sub">請先選擇你的身分。之後也可以在「教師控制台 → 班級管理」修改。</p>
+      <div class="role-pick">
+        <button type="button" class="role-card" data-role="single"><span class="rc-ico">👩‍🏫</span><b>導師（一個班）</b><small>只帶一個班級，例如：六年甲班</small></button>
+        <button type="button" class="role-card" data-role="multi"><span class="rc-ico">🧑‍🔬</span><b>科任老師（多個班）</b><small>教好幾個班，例如：六甲自然、五乙自然、四甲自然</small></button>
+      </div>`);
+    $$('#modalCard .role-card').forEach(b => b.onclick = () => openSetup(b.dataset.role));
+    return;
+  }
   const s = state.settings;
   const presets = [15, 18, 20, 22, 24, 25, 26, 28, 30, 32, 35, 40];
   openModal(`
@@ -2463,7 +2769,8 @@ function openSetup() {
       <div class="field"><span>再輸入一次密碼</span><input id="sPw2" type="password" autocomplete="new-password"></div>
     </div>
     <div class="err" id="sErr"></div>
-    <div class="modal-actions"><button class="primary" id="sGo">開始使用</button></div>`);
+    <div class="modal-actions" style="justify-content:space-between"><button type="button" class="btn" id="sBack">← 重新選擇身分</button><button class="primary" id="sGo">開始使用</button></div>`);
+  $('#sBack').onclick = () => openSetup();
   const upd = () => $('#sSum').innerHTML = seatSummary(+$('#sMax').value || 0, $('#sVac').value);
   upd();
   $$('.seat-presets button').forEach(b => b.onclick = () => {
@@ -2478,11 +2785,74 @@ function openSetup() {
     if (pw !== $('#sPw2').value) return $('#sErr').textContent = '兩次密碼不一樣';
     Object.assign(s, {
       school: $('#sSchool').value.trim(), className: $('#sClass').value.trim(), schoolYear: $('#sYear').value.trim(), semester: $('#sSem').value,
-      maxSeat: max, vacant: parseVacant($('#sVac').value).filter(n => n <= max), pwHash: await hashPw(pw), setupDone: true
+      maxSeat: max, vacant: parseVacant($('#sVac').value).filter(n => n <= max), pwHash: await hashPw(pw), setupDone: true, mode: 'single'
     });
     setAuth();
     save(); closeModal(); renderAll(); toast('✅ 設定完成！');
   };
+}
+// 科任老師：一次加入好幾個班，每班有自己的座號名單
+function openSetupMulti() {
+  const s = state.settings;
+  let rows = [{ name: '', subject: '', max: 20, vac: '' }, { name: '', subject: '', max: 20, vac: '' }];
+  openModal(`
+    <h2>🧑‍🔬 科任老師設定</h2>
+    <p class="sub">把你教的班級一班一班加進來。每一班有自己的學生名單、金幣、作業與聯絡簿，彼此不會混在一起。學生姓名之後可以到「教師控制台 → 座號與名單」填寫。</p>
+    <div class="field"><span>學校名稱</span><input id="sSchool" value="${esc(s.school)}"></div>
+    ${termFields(s, 's')}
+    <div class="setup-cls-head"><span>班級名稱</span><span>科目（選填）</span><span>最大座號</span><span>空號</span><span></span></div>
+    <div id="suRows" class="setup-cls-rows"></div>
+    <div class="btn-row" style="justify-content:flex-start;margin:8px 0 14px"><button type="button" class="btn" id="suAdd">＋ 再加一班</button></div>
+    <div class="row2">
+      <div class="field"><span>設定教師後台密碼（至少 4 碼）</span><input id="sPw" type="password" autocomplete="new-password"></div>
+      <div class="field"><span>再輸入一次密碼</span><input id="sPw2" type="password" autocomplete="new-password"></div>
+    </div>
+    <div class="err" id="sErr"></div>
+    <div class="modal-actions" style="justify-content:space-between"><button type="button" class="btn" id="sBack">← 重新選擇身分</button><button class="primary" id="sGo">開始使用</button></div>`, { wide: true });
+  const ph = ['六甲', '五乙', '四甲', '三甲', '二甲', '一甲'];
+  const sync = () => { rows = $$('#suRows .setup-cls-row').map(r => ({ name: $('[data-k=name]', r).value, subject: $('[data-k=subject]', r).value, max: $('[data-k=max]', r).value, vac: $('[data-k=vac]', r).value })); };
+  const draw = () => {
+    $('#suRows').innerHTML = rows.map((r, i) => `<div class="setup-cls-row" data-i="${i}">
+      <input data-k="name" value="${esc(r.name)}" placeholder="例如：${ph[i % ph.length]}" maxlength="20">
+      <input data-k="subject" value="${esc(r.subject)}" placeholder="例如：自然" list="suSubj" maxlength="20">
+      <input data-k="max" type="number" min="1" max="60" value="${esc(r.max)}">
+      <input data-k="vac" value="${esc(r.vac)}" placeholder="例如：7、15">
+      <button type="button" data-del="${i}" title="刪除這一列">✕</button></div>`).join('') + `<datalist id="suSubj">${SUBJECTS.map(x => `<option value="${x}">`).join('')}</datalist>`;
+  };
+  draw();
+  $('#suAdd').onclick = () => { sync(); const last = rows[rows.length - 1] || {}; rows.push({ name: '', subject: last.subject || '', max: last.max || 20, vac: '' }); draw(); };
+  $('#suRows').onclick = e => { const d = e.target.closest('[data-del]'); if (!d) return; sync(); if (rows.length > 1) rows.splice(+d.dataset.del, 1); draw(); };
+  $('#sBack').onclick = () => openSetup();
+  $('#sGo').onclick = async () => {
+    sync();
+    const list = rows.filter(r => r.name.trim());
+    const pw = $('#sPw').value;
+    if (!list.length) return $('#sErr').textContent = '請至少輸入一個班級名稱';
+    const bad = list.find(r => !(+r.max >= 1 && +r.max <= 60));
+    if (bad) return $('#sErr').textContent = `「${bad.name.trim()}」的最大座號請填 1～60`;
+    if (pw.length < 4) return $('#sErr').textContent = '密碼至少 4 碼';
+    if (pw !== $('#sPw2').value) return $('#sErr').textContent = '兩次密碼不一樣';
+    const pwHash = await hashPw(pw);
+    setupMultiClasses(list.map(r => ({ name: r.name.trim(), subject: r.subject.trim(), maxSeat: +r.max, vacant: parseVacant(r.vac).filter(n => n <= +r.max) })));
+    Object.assign(s, { school: $('#sSchool').value.trim(), schoolYear: $('#sYear').value.trim(), semester: $('#sSem').value, pwHash, setupDone: true });
+    setAuth();
+    save(); closeModal(); renderAll();
+    toast(`✅ 設定完成！共 ${list.length} 個班級。到「教師控制台 → 週課表」標記每一節是哪一班，上課時就會自動換班。`, 6000);
+  };
+}
+// 依清單建立班級；第一班成為目前班級
+function setupMultiClasses(list) {
+  const tasks = clone(state.taskDefs);
+  const classes = list.map(r => ({ id: 'c' + uid(), name: r.name, subject: r.subject || '', data: freshClassData(r.name, { maxSeat: r.maxSeat, vacant: r.vacant, taskDefs: tasks }) }));
+  putClassData(state, classes[0].data);
+  classes[0].data = null;
+  state.settings.className = classes[0].name;
+  state.classes = classes;
+  state.curClass = classes[0].id;
+  state.settings.mode = 'multi';
+  state.settings.autoSwitch = true;
+  drawnBy = {}; drawn = []; weekDraft = null; autoKey = null;
+  return classes;
 }
 
 /* ---------------- 教師登入 ---------------- */
@@ -2517,24 +2887,27 @@ function teacherOpen(tab, focusSel) {
 let consoleTab = 'basic';
 function openConsole(tab) {
   if (tab) consoleTab = tab;
-  const tabs = [['basic', '基本資料'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['tasks', '每日任務'], ['points', '加扣金幣'], ['data', '資料管理']];
+  const tabs = [['basic', '基本資料'], ['classes', '班級管理'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['tasks', '每日任務'], ['points', '加扣金幣'], ['data', '資料管理']];
   openModal(`<button class="close" data-close>✕</button>
     <h2>🛠️ 教師控制台</h2><p class="sub">TEACHER CONSOLE・修改後按「儲存」立即生效</p>
+    ${isMulti() && classList().length > 1 ? `<div class="ct-class"><span>目前班級</span><select id="ctClassSel">${classList().map(c => `<option value="${esc(c.id)}"${c.id === state.curClass ? ' selected' : ''}>${esc(classLabel(c))}</option>`).join('')}</select><small>名單、公告、每日任務、加扣金幣都是改這一班</small></div>` : ''}
     <div class="console-tabs">${tabs.map(([k, v]) => `<button data-ct="${k}" class="${k === consoleTab ? 'active' : ''}">${v}</button>`).join('')}</div>
     <div id="ctBody"></div>`, { wide: true });
   $$('[data-ct]').forEach(b => b.onclick = () => openConsole(b.dataset.ct));
-  ({ basic: ctBasic, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, tasks: ctTasks, points: ctPoints, data: ctData })[consoleTab]($('#ctBody'));
+  const sel = $('#ctClassSel');
+  if (sel) sel.onchange = () => { switchClass(sel.value); openConsole(consoleTab); };
+  ({ basic: ctBasic, classes: ctClasses, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, tasks: ctTasks, points: ctPoints, data: ctData })[consoleTab]($('#ctBody'));
 }
 
 function ctBasic(el) {
   const s = state.settings;
   const L = s.loc;
   el.innerHTML = `
-    <div class="field"><span>📢 跑馬燈公告（可以輸入多則，一行一則，會在畫面左上角輪流捲動）</span>
+    <div class="field"><span>📢 跑馬燈公告（可以輸入多則，一行一則，會在畫面左上角輪流捲動）${isMulti() ? `<b class="cls-note">只顯示在「${esc(classLabel(curClassObj()))}」</b>` : ''}</span>
       <textarea id="bAnn" placeholder="例如：明天穿運動服&#10;星期五校外教學，記得帶水壺">${esc(s.announcement)}</textarea></div>
     <label class="chk" style="margin:-4px 0 14px;font-size:14px"><input type="checkbox" id="bStuEdit" ${s.studentEdit ? 'checked' : ''}> 允許不輸入密碼就新增／刪除聯絡簿、倒數日（不勾選比較安全，學生無法亂寫）</label>
     <div class="field"><span>學校名稱</span><input id="bSchool" value="${esc(s.school)}"></div>
-    <div class="field"><span>班級名稱</span><input id="bClass" value="${esc(s.className)}"></div>
+    <div class="field"><span>${isMulti() ? '目前班級名稱（其他班請到「班級管理」改）' : '班級名稱'}</span><input id="bClass" value="${esc(s.className)}"></div>
     ${termFields(s, 'b')}
     <h4 style="margin:8px 0 10px">🌤️ 天氣</h4>
     <div class="row2">
@@ -2559,7 +2932,7 @@ function ctBasic(el) {
     <div class="modal-actions"><button class="primary" id="bSave">儲存</button></div>`;
   $('#bSrc').onchange = e => { $('#bCwa').classList.toggle('hidden', e.target.value !== 'cwa'); $('#bOm').classList.toggle('hidden', e.target.value === 'cwa'); };
   $('#bSave').onclick = async () => {
-    Object.assign(s, { school: $('#bSchool').value.trim(), className: $('#bClass').value.trim(), schoolYear: $('#bYear').value.trim(), semester: $('#bSem').value, announcement: $('#bAnn').value.trim(), studentEdit: $('#bStuEdit').checked });
+    Object.assign(s, { school: $('#bSchool').value.trim(), className: $('#bClass').value.trim() || s.className, schoolYear: $('#bYear').value.trim(), semester: $('#bSem').value, announcement: $('#bAnn').value.trim(), studentEdit: $('#bStuEdit').checked });
     s.loc = { ...L, name: $('#bLoc').value.trim(), lat: +$('#bLat').value || 22.6, lon: +$('#bLon').value || 120.96,
       source: $('#bSrc').value, cwaKey: $('#bKey').value.trim(), cwaDataset: $('#bDs').value.trim() || 'F-D0047-037', cwaTown: $('#bTown').value.trim() || '金峰鄉' };
     save(); renderAll(); toast('✅ 基本資料已儲存');
@@ -2578,7 +2951,7 @@ function ctSeats(el) {
     $('#namesGrid').innerHTML = Array.from({ length: max }, (_, i) => i + 1).map(n =>
       `<label class="${vac.has(n) ? 'vacant' : ''}"><b>${pad(n)}</b><input class="mini-input" data-n="${n}" value="${esc(cur[n] ?? s.names[n] ?? '')}" placeholder="${vac.has(n) ? '空號' : '姓名（可空白）'}"></label>`).join('');
   };
-  el.innerHTML = `
+  el.innerHTML = `${curClassNote('名單')}
     <div class="row2">
       <div class="field"><span>最大座號</span><input id="cMax" type="number" min="1" max="60" value="${s.maxSeat}"></div>
       <div class="field"><span>空號（例如轉出：7、15）</span><input id="cVac" value="${s.vacant.join('、')}"></div>
@@ -2601,6 +2974,117 @@ function ctSeats(el) {
     const names = {}; $$('#namesGrid input').forEach(i => { if (i.value.trim()) names[i.dataset.n] = i.value.trim(); });
     s.names = names;
     save(); renderAll(); toast('✅ 座號與名單已儲存');
+  };
+}
+
+// 多班級：提醒老師現在改的是哪一班
+function curClassNote(what) {
+  if (!isMulti() || classList().length < 2) return '';
+  return `<p class="cls-note-line">正在編輯：<b>${esc(classLabel(curClassObj()))}</b> 的${what}（每一班分開存；要改別班，請先在上方「目前班級」切換）</p>`;
+}
+
+/* ---------------- 班級管理（導師／科任老師） ---------------- */
+function ctClasses(el) {
+  const multi = isMulti();
+  const list = classList();
+  const seatsOf = c => {
+    const on = c.id === state.curClass;
+    const max = Number(on ? state.settings.maxSeat : c.data?.settings?.maxSeat) || 0;
+    const vac = (on ? state.settings.vacant : c.data?.settings?.vacant) || [];
+    return Math.max(0, max - vac.filter(v => v >= 1 && v <= max).length);
+  };
+  el.innerHTML = `
+    <h4 style="margin:0 0 8px">身分</h4>
+    <div class="role-pick small">
+      <button type="button" class="role-card${!multi ? ' active' : ''}" data-role="single"><span class="rc-ico">👩‍🏫</span><b>導師（一個班）</b><small>畫面只有一個班級</small></button>
+      <button type="button" class="role-card${multi ? ' active' : ''}" data-role="multi"><span class="rc-ico">🧑‍🔬</span><b>科任老師（多個班）</b><small>可新增好幾個班，上方會出現「換班級」</small></button>
+    </div>
+    <div class="err" id="clsErr"></div>
+    ${multi ? `
+    <h4 style="margin:14px 0 8px">班級清單</h4>
+    <p class="sub">每一班有自己的學生名單、金幣、圖鑑、山林、作業、聯絡簿、每日任務和公告。作息時間、週課表、倒數日、天氣、音樂、備份和密碼是全部班級共用的。</p>
+    <div class="cls-head"><span>順序</span><span>班級名稱</span><span>科目（選填）</span><span>人數</span><span></span></div>
+    <div id="clsRows" class="cls-rows">${list.map((c, i) => `<div class="cls-row${c.id === state.curClass ? ' cur' : ''}" data-id="${esc(c.id)}">
+      <span class="cls-move"><button type="button" class="btn" data-up title="往上移" ${i === 0 ? 'disabled' : ''}>▲</button><button type="button" class="btn" data-down title="往下移" ${i === list.length - 1 ? 'disabled' : ''}>▼</button></span>
+      <input data-k="name" value="${esc(c.name)}" maxlength="20" placeholder="班級名稱">
+      <input data-k="subject" value="${esc(c.subject)}" maxlength="20" placeholder="例如：自然" list="clsSubj">
+      <span class="cls-n">${seatsOf(c)} 人</span>
+      <span class="cls-act">${c.id === state.curClass ? '<em class="cls-cur">目前</em>' : `<button type="button" class="btn" data-go>切換</button>`}<button type="button" class="btn danger" data-del title="刪除這一班" ${list.length <= 1 ? 'disabled' : ''}>刪除</button></span>
+    </div>`).join('')}</div>
+    <datalist id="clsSubj">${SUBJECTS.map(x => `<option value="${x}">`).join('')}</datalist>
+    <div class="modal-actions" style="justify-content:flex-end;margin-top:8px"><button type="button" class="primary" id="clsSave">儲存班級名稱</button></div>
+    <h4 style="margin:18px 0 8px">＋ 新增班級</h4>
+    <div class="cls-add">
+      <input id="clsNewName" class="mini-input" placeholder="班級名稱，例如：五乙" maxlength="20">
+      <input id="clsNewSubj" class="mini-input" placeholder="科目（選填）" list="clsSubj" maxlength="20">
+      <input id="clsNewMax" class="mini-input" type="number" min="1" max="60" value="20" title="最大座號">
+      <input id="clsNewVac" class="mini-input" placeholder="空號，例如：7、15">
+      <button type="button" class="btn" id="clsAdd">＋ 新增班級</button>
+    </div>
+    <h4 style="margin:18px 0 8px">⏰ 依課表自動換班</h4>
+    <label class="ann-chk" style="display:inline-flex"><input type="checkbox" id="clsAuto"${state.settings.autoSwitch !== false ? ' checked' : ''}>上課時間到，依週課表自動切換到那一班</label>
+    <p class="sub">到「週課表」分頁，在每一格下方選這節是哪一班（臨時調課也可以改）。每一節開始時、或剛打開儀表板時會自動切換；在同一節裡你手動換班，不會被切回去。</p>` : `
+    <p class="sub" style="margin-top:12px">目前是導師模式，只有一個班級（${esc(state.settings.className)}）。如果你也教其他班，請改成「科任老師（多個班）」，現在這個班的資料會成為第一個班，不會遺失。</p>`}`;
+  const err = m => { $('#clsErr').textContent = m || ''; };
+  $$('.role-pick .role-card', el).forEach(b => b.onclick = () => {
+    const role = b.dataset.role;
+    if (role === (multi ? 'multi' : 'single')) return;
+    if (role === 'single' && !setClassMode('single')) return err(`目前有 ${classList().length} 個班級。請先刪除其他班級、只留下一班，才能改回導師模式。`);
+    if (role === 'multi') { setClassMode('multi'); toast('✅ 已改成科任老師模式，可以在下方新增班級', 3500); }
+    else toast('✅ 已改回導師模式');
+    renderAll(); openConsole('classes');
+  });
+  if (!multi) return;
+  const commitNames = () => {
+    let bad = false;
+    $$('#clsRows .cls-row').forEach(r => {
+      const c = classById(r.dataset.id); if (!c) return;
+      const nm = $('[data-k=name]', r).value.trim();
+      if (!nm) { bad = true; return; }
+      c.name = nm; c.subject = $('[data-k=subject]', r).value.trim();
+      if (c.id === state.curClass) state.settings.className = nm;
+      else if (c.data) c.data.settings = { ...(c.data.settings || {}), className: nm };
+    });
+    return !bad;
+  };
+  $('#clsSave').onclick = () => {
+    if (!commitNames()) return err('班級名稱不能空白');
+    err(''); save(); renderAll(); toast('✅ 班級名稱已儲存'); openConsole('classes');
+  };
+  $('#clsRows').onclick = e => {
+    const row = e.target.closest('.cls-row'); if (!row) return;
+    const id = row.dataset.id, c = classById(id);
+    if (e.target.closest('[data-up]') || e.target.closest('[data-down]')) {
+      commitNames();
+      moveClass(id, e.target.closest('[data-up]') ? -1 : 1);
+      renderAll(); openConsole('classes'); return;
+    }
+    if (e.target.closest('[data-go]')) { commitNames(); switchClass(id); openConsole('classes'); return; }
+    if (e.target.closest('[data-del]')) {
+      if (classList().length <= 1) return err('至少要保留一個班級');
+      askConfirm(`確定要刪除「${classLabel(c)}」嗎？\n\n這一班的學生名單、金幣、圖鑑、作業、聯絡簿和每日任務紀錄都會一起刪除，無法復原。\n（建議先到「資料管理」手動備份）`, '刪除這一班', { danger: true }).then(ok => {
+        if (!ok) return;
+        commitNames();
+        const name = classLabel(c);
+        deleteClass(id);
+        renderAll(); openConsole('classes');
+        toast(`已刪除「${name}」`);
+      });
+    }
+  };
+  $('#clsAdd').onclick = () => {
+    const name = $('#clsNewName').value.trim(), max = +$('#clsNewMax').value;
+    if (!name) return err('請輸入新班級的名稱');
+    if (!(max >= 1 && max <= 60)) return err('最大座號請填 1～60');
+    commitNames();
+    const c = addClass(name, { subject: $('#clsNewSubj').value, maxSeat: max, vacant: parseVacant($('#clsNewVac').value).filter(n => n <= max) });
+    renderAll(); openConsole('classes');
+    toast(`✅ 已新增「${classLabel(c)}」。學生姓名請先切換到這班，再到「座號與名單」填寫`, 4500);
+  };
+  $('#clsAuto').onchange = () => {
+    state.settings.autoSwitch = $('#clsAuto').checked;
+    save(); renderClassSwitch();
+    toast(state.settings.autoSwitch ? '✅ 已開啟依課表自動換班' : '已關閉自動換班，請用上方「換班級」手動切換');
   };
 }
 
@@ -2669,12 +3153,14 @@ function parseTimetable(text) {
 
 function ctTimetable(el) {
   const tt = state.timetable || {};
+  const multi = isMulti();
   el.innerHTML = `
     <p class="sub">在格子裡輸入科目（可從下拉選單挑選），空白代表那節沒課。首頁會依今天星期幾自動顯示科目。<br>每一節的時間請在「作息時間」分頁設定。</p>
+    ${multi ? '<p class="cls-note-line">科任老師：每一格下方可以選「這節是哪一班」。上課時間到，儀表板會自動切換到那一班（可在「班級管理」關閉）。只選班級、科目空白時，會自動填入該班的科目。</p>' : ''}
     <div class="tt-wrap"><table class="tt-edit">
       <thead><tr><th>節次</th>${[1, 2, 3, 4, 5].map(w => `<th>星期${WEEK[w]}</th>`).join('')}</tr></thead>
       <tbody>${SLOTS.map(s => `<tr><th>${slotName(s)}<small>${slotTime(s) || '<i>未設定時間</i>'}</small></th>${[1, 2, 3, 4, 5].map(w =>
-        `<td><input list="subjList" data-w="${w}" data-s="${s}" value="${esc((tt[w] || {})[s] || '')}"></td>`).join('')}</tr>`).join('')}</tbody>
+        `<td><input list="subjList" data-w="${w}" data-s="${s}" value="${esc((tt[w] || {})[s] || '')}">${multi ? `<select class="tt-cls" data-w="${w}" data-s="${s}" title="這節是哪一班">${classOptions(ttClassOf(w, s))}</select>` : ''}</td>`).join('')}</tr>`).join('')}</tbody>
     </table></div>
     <datalist id="subjList">${SUBJECTS.map(x => `<option value="${x}">`).join('')}</datalist>
 
@@ -2710,11 +3196,23 @@ function ctTimetable(el) {
     try { await navigator.clipboard.writeText(AI_PROMPT); toast('✅ 已複製 AI 指令'); }
     catch (e) { const r = document.createRange(); r.selectNodeContents($('#aiPrompt')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('請按 Ctrl+C 複製已選取的文字'); }
   };
-  $('#ttClear').onclick = () => { if (confirm('清空所有格子？（按「儲存」後才會生效）')) $$('.tt-edit input').forEach(i => i.value = ''); };
+  $('#ttClear').onclick = () => { if (confirm('清空所有格子？（按「儲存」後才會生效）')) { $$('.tt-edit input').forEach(i => i.value = ''); $$('.tt-edit select.tt-cls').forEach(x => x.value = ''); } };
+  const cellInput = sel => $(`.tt-edit input[data-w="${sel.dataset.w}"][data-s="${sel.dataset.s}"]`);
+  $$('.tt-edit select.tt-cls').forEach(sel => sel.onchange = () => {
+    const c = classById(sel.value), inp = cellInput(sel);
+    if (c && inp && !inp.value.trim() && c.subject) inp.value = c.subject;
+  });
   $('#ttSave').onclick = () => {
-    const t = {};
+    const t = {}, tc = {};
+    $$('.tt-edit select.tt-cls').forEach(sel => {
+      const c = classById(sel.value); if (!c) return;
+      const inp = cellInput(sel);
+      if (inp && !inp.value.trim()) inp.value = c.subject || c.name;
+      (tc[sel.dataset.w] ||= {})[sel.dataset.s] = c.id;
+    });
     $$('.tt-edit input').forEach(i => { const v = i.value.trim(); if (v) (t[i.dataset.w] ||= {})[i.dataset.s] = v; });
     state.timetable = t;
+    if (multi) state.ttClass = tc;
     const noTime = SLOTS.filter(s => Object.values(t).some(d => d[s]) && !slotTime(s));
     save(); renderSchedule(); tick();
     toast(noTime.length ? `⚠️ 已儲存，但 ${noTime.map(slotName).join('、')} 還沒設定時間，請到「作息時間」補上` : '✅ 週課表已儲存', 3500);
@@ -2729,7 +3227,7 @@ function ctTasks(el) {
       <label class="ann-chk" title="今天還沒打卡的座號會自動出現在左上角跑馬燈"><input type="checkbox" data-k="announce"${t.announce ? ' checked' : ''}>顯示在公告</label>
       <button data-del="${i}">✕</button></div>`).join('');
   };
-  el.innerHTML = `<p class="sub">每天都會出現的打卡任務。學生每完成一項 +1 金幣、班級山林 +1。（刪除任務不會影響已得到的金幣）</p>
+  el.innerHTML = `${curClassNote('每日任務')}<p class="sub">每天都會出現的打卡任務。學生每完成一項 +1 金幣、班級山林 +1。（刪除任務不會影響已得到的金幣）</p>
     <p class="sub">勾選「顯示在公告」後，該任務今天尚未完成的座號會自動出現在左上角跑馬燈；全班完成就會自動消失，不用手動輸入。</p>
     <div class="edit-rows" id="tkRows"></div>
     <div class="modal-actions" style="justify-content:space-between"><button class="btn" id="tkAdd">＋ 新增任務</button><button class="primary" id="tkSave">儲存</button></div>`;
@@ -2751,7 +3249,7 @@ function ctTasks(el) {
 
 function ctPoints(el) {
   const sel = new Set();
-  el.innerHTML = `<p class="sub">選擇座號（可多選），再按要加或扣的金幣數。加分也會讓班級山林成長，並可能發現新物種。</p>
+  el.innerHTML = `${curClassNote('金幣')}<p class="sub">選擇座號（可多選），再按要加或扣的金幣數。加分也會讓班級山林成長，並可能發現新物種。</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="pAll">全選</button><button class="btn" id="pNone">清除選擇</button>
       <input class="mini-input" id="pReason" placeholder="原因（例如：熱心助人）" style="flex:1;min-width:180px"></div>
     <div class="pick-grid" id="pGrid">${activeSeats().map(n => `<button data-n="${n}"><b>${pad(n)}</b>${esc(nameOf(n)) || '&nbsp;'}</button>`).join('')}</div>
@@ -2832,7 +3330,8 @@ function fmtWhen(d) {
 }
 function backupPayload() { return JSON.stringify(state, null, 1); }
 function backupFileName(tag = '手動備份') {
-  return `班級儀表板_${state.settings.className || '班級'}_${tag}_${dateKey()}.json`;
+  const who = isMulti() && classList().length > 1 ? `科任${classList().length}班` : (state.settings.className || '班級');
+  return `班級儀表板_${who}_${tag}_${dateKey()}.json`;
 }
 
 const IDB_BACKUP = 'jl-dashboard-fs';
@@ -3076,10 +3575,10 @@ function ctData(el) {
     </div>
     <div class="danger-zone">
       <h4>🎓 新學年／換班級</h4>
-      <p class="sub">會先自動下載一份備份，然後清空：學生金幣與物種、任務打卡紀錄、聯絡簿、加扣分紀錄、班級山林等級、學生名單。<br>保留：學校名稱、作息表、每日任務、倒數日、我的音樂、密碼。接著會帶你設定新班級。</p>
+      ${isMulti() ? `<p class="sub">會先自動下載一份備份（含所有班級），然後清空<b>每一班</b>的：學生金幣與物種、任務打卡紀錄、聯絡簿、作業、加扣分紀錄、班級山林等級、學生名單。<br>保留：班級清單（班名、科目）、學校名稱、作息表、週課表與班級標記、每日任務、倒數日、我的音樂、密碼。接著可到「班級管理」改班名、刪除或新增班級。</p>` : `<p class="sub">會先自動下載一份備份，然後清空：學生金幣與物種、任務打卡紀錄、聯絡簿、加扣分紀錄、班級山林等級、學生名單。<br>保留：學校名稱、作息表、每日任務、倒數日、我的音樂、密碼。接著會帶你設定新班級。</p>`}
       <button class="btn danger" id="dNewYear">開始新學年</button>
       <h4 style="margin-top:18px">完全重設</h4>
-      <p class="sub">清除所有資料（包含密碼），回到第一次使用的狀態。</p>
+      <p class="sub">清除所有資料（包含密碼${isMulti() ? '與所有班級' : ''}），回到第一次使用的狀態。</p>
       <button class="btn danger" id="dWipe">完全重設</button>
     </div>
     <div class="modal-actions"><button class="btn" id="dLogout">🔓 登出教師模式</button></div>`;
@@ -3104,16 +3603,12 @@ function ctData(el) {
     r.onload = () => {
       try {
         const d = JSON.parse(r.result);
-        if (!d.settings || !d.students) throw new Error('格式不符');
-        askConfirm(`要用備份檔「${f.name}」取代目前全部資料嗎？`, '還原').then(ok => {
+        const next = importBackupData(d);
+        const n = next.classes.length;
+        askConfirm(`要用備份檔「${f.name}」取代目前全部資料嗎？${isMulti() ? '\n（目前所有班級都會被取代）' : ''}${n > 1 ? `\n備份檔裡有 ${n} 個班級。` : ''}`, '還原').then(ok => {
           if (!ok) return;
-          state = { ...defaults(), ...d, settings: { ...defaults().settings, ...d.settings } };
-          if (!Array.isArray(state.homework)) state.homework = [];
-          if (!state.ttOverrides || typeof state.ttOverrides !== 'object') state.ttOverrides = {};
-          state.backup = { ...DEFAULT_BACKUP, ...(d.backup || {}) };
-          state.music = normalizeMusic(d.music);
-          migrateTaskAnnounce(state);
-          migrateHomework(state);
+          state = next;
+          drawnBy = {}; drawn = []; weekDraft = null; autoKey = null; refreshDrawUI();
           setAuth();
           stopMusic(); musicMissing.clear();
           save(); renderAll(); renderMusic(); loadWeather();
@@ -3177,14 +3672,13 @@ function ctData(el) {
     $('#dOld').value = $('#dNew').value = '';
   };
   $('#dNewYear').onclick = () => {
-    askConfirm('確定要開始新學年？目前班級的學生資料會被清空（會先下載備份）。', '開始新學年').then(ok => {
+    askConfirm(isMulti() ? `確定要開始新學年？全部 ${classList().length} 個班級的學生資料都會被清空（會先下載備份）。` : '確定要開始新學年？目前班級的學生資料會被清空（會先下載備份）。', '開始新學年').then(ok => {
       if (!ok) return;
       exportData('學年結束備份');
-      Object.assign(state, { students: {}, done: {}, contact: {}, homework: [], log: [], forest: { level: 1, points: 0 }, ttOverrides: {} });
-      Object.assign(state.settings, { names: {}, vacant: [], schoolYear: '', semester: '' });
+      newYearReset();
       save(); renderAll();
-      toast('✅ 已清空，請設定新班級資料', 3000);
-      openConsole('basic');
+      toast(isMulti() ? '✅ 每一班都已清空，請到「班級管理」與「座號與名單」設定新學年的班級' : '✅ 已清空，請設定新班級資料', 3500);
+      openConsole(isMulti() ? 'classes' : 'basic');
     });
   };
   $('#dWipe').onclick = () => {
@@ -3348,6 +3842,8 @@ showTimer(); showPomo();
 $('#noiseLine').style.left = $('#noiseThreshold').value + '%';
 applyTheme(state.settings.theme || 'default');
 renderAll();
+// 舊版（v1.7 以前）資料：轉成「第一個班級」後馬上存一次，班級 id 固定下來
+try { const raw = localStorage.getItem(KEY); if (raw && !Array.isArray(JSON.parse(raw).classes)) save(); } catch (e) {}
 tick();
 setInterval(tick, 1000);
 loadWeather();
@@ -3360,8 +3856,8 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.7.0';
-const APP_UPDATED = '2026-11-13';
+const APP_VERSION = '1.8.0';
+const APP_UPDATED = '2026-11-16';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
@@ -3383,6 +3879,9 @@ if (typeof globalThis !== 'undefined') {
     isBackupDue, lastDueSlot, nextBackupAt, backupDays, backupCfg, backupFileName, backupPayload, DEFAULT_BACKUP, maybeAutoBackup,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
     setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
+    ensureClasses, normalizeState, importBackupData, switchClass, checkAutoSwitch, periodAt, periodKey, addClass, deleteClass, moveClass, setClassMode,
+    newYearReset, setupMultiClasses, ttClassOf, classOnDate, isMulti, curClassObj, classLabel, renderClassSwitch, openSetup, openConsole, activeSeats,
+    getDrawn: () => drawn, setDrawn: a => { drawn = a; }, getAutoKey: () => autoKey,
     getState: () => state, setState: (s) => { state = s; }
   };
 }
