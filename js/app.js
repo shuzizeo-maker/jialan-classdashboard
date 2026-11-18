@@ -1441,7 +1441,7 @@ function renderCritters() {
     const r = (i * 53 % 97) / 97;
     if (sp.cat === 'bird') h += `<span class="critter fly" style="top:${8 + r * 22}%;left:0;animation-duration:${30 + r * 30}s;animation-delay:-${r * 50}s">${sp.emoji}</span>`;
     else if (sp.cat === 'insect') h += `<span class="critter flutter" style="top:${52 + r * 22}%;left:${5 + r * 85}%;animation-duration:${4 + r * 4}s;font-size:22px">${sp.emoji}</span>`;
-    else if (sp.cat === 'animal') h += `<span class="critter walk" style="bottom:${12 + r * 8}%;left:${5 + r * 80}%;animation-duration:${6 + r * 6}s">${sp.emoji}</span>`;
+    else if (sp.cat === 'animal') h += `<span class="critter walk" style="bottom:${12 + r * 8}%;left:${5 + r * 80}%;animation-duration:${(6 + r * 6) * 2}s">${sp.emoji}</span>`;
     else h += `<span class="critter sway" style="bottom:${2 + r * 6}%;left:${3 + r * 92}%;font-size:30px">${sp.emoji}</span>`;
   });
   box.innerHTML = h;
@@ -3856,8 +3856,8 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.8.0';
-const APP_UPDATED = '2026-11-16';
+const APP_VERSION = '1.8.1';
+const APP_UPDATED = '2026-11-18';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
