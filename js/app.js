@@ -91,6 +91,8 @@ function defaults() {
       attNames: false, // 點名：首頁與跑馬燈要不要顯示姓名（畫面是公開的，預設只顯示座號）
       examUrl: 'https://exam-smart-board-v6-persistent-audio.pages.dev/', // 📝 監考看板網址（所有班級共用）
       examBtn: true, // 底部是否顯示「📝 監考」
+      timerStyle: 'island', // 計時器畫面：island＝🏝️ 3D 島嶼、simple＝簡潔
+      drawAnim: 'random', // 抽號動畫：random、slot、wheel、gacha、cards、pet、off
       loc: { name: '臺東縣 金峰鄉', lat: 22.60, lon: 120.96, source: 'openmeteo', cwaKey: '', cwaDataset: 'F-D0047-037', cwaTown: '金峰鄉' }
     },
     schedule: DEFAULT_SCHEDULE.map(r => ({ ...r })),
@@ -141,6 +143,8 @@ function normalizeState(s) {
     merged.attendance = normalizeAttendance(merged.attendance);
     if (!parseExamUrl(merged.settings.examUrl).ok) merged.settings.examUrl = d.settings.examUrl;
     merged.settings.examBtn = merged.settings.examBtn !== false;
+    if (!['island', 'simple'].includes(merged.settings.timerStyle)) merged.settings.timerStyle = 'island';
+    if (!['random', 'slot', 'wheel', 'gacha', 'cards', 'pet', 'off'].includes(merged.settings.drawAnim)) merged.settings.drawAnim = 'random';
     migrateTaskAnnounce(merged);
     migrateHomework(merged);
     migrateAnnouncement(merged);
@@ -2309,25 +2313,288 @@ function showTimer() {
   const l = Math.max(0, Math.ceil(timer.left));
   $('#timerDisp').textContent = `${pad(Math.floor(l / 60))}:${pad(l % 60)}`;
   $('#timerStart').textContent = timer.running ? '暫停' : '開始';
+  updateIslPill();
 }
-function timerSet(sec) { timer.total = timer.left = Math.max(0, sec); timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.remove('ringing'); showTimer(); }
+function timerSet(sec) { timer.total = timer.left = Math.max(0, sec); timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.remove('ringing'); isl.done = 0; isl.lastSec = -1; showTimer(); }
 $$('.presets button').forEach(b => b.onclick = () => timerSet(b.dataset.min * 60));
 $('#timerPlus').onclick = () => { timer.left += 60; if (timer.running) timer.end += 60000; showTimer(); };
 $('#timerMinus').onclick = () => { timer.left = Math.max(0, timer.left - 60); if (timer.running) timer.end -= 60000; showTimer(); };
 $('#timerReset').onclick = () => timerSet(timer.total);
 $('#timerStart').onclick = () => {
   ensureAudio();
-  $('#timerDisp').classList.remove('ringing');
+  $('#timerDisp').classList.remove('ringing'); isl.done = 0; isl.lastSec = -1;
   if (timer.running) { timer.running = false; clearInterval(timer.iv); showTimer(); return; }
   if (timer.left <= 0) return;
   timer.running = true; timer.end = Date.now() + timer.left * 1000;
   timer.iv = setInterval(() => {
     timer.left = (timer.end - Date.now()) / 1000;
-    if (timer.left <= 0) { timer.left = 0; timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.add('ringing'); beep(4); toast('⏰ 時間到！'); }
+    if (timer.left <= 0) { timer.left = 0; timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.add('ringing'); beep(4); toast('⏰ 時間到！'); islFinish(); }
+    else if (timer.left <= 10) islTickSound(Math.ceil(timer.left));
     showTimer();
   }, 200);
   showTimer();
 };
+/* ---------------- 🏝️ 3D 島嶼倒數（v1.11.0） ----------------
+ * 原創設計：用 canvas 2D 自己做簡單的 3D 投影，畫一座漂浮的低多邊形「山林島嶼」：
+ * 中間一座小山（山頂有雪）、四周的樹、一條小溪流到島邊變成瀑布、雲朵繞著島飄，
+ * 班上已經發現的動物在島上散步（emoji 臉朝左，往右走時左右翻轉，和 v1.8.1 一樣）。
+ * 不用 Three.js、不用網路，平板也跑得動：最多每秒 30 張、畫面看不到時（切到別的工具、別的頁面、
+ * 監考模式、瀏覽器分頁在背景）就停止繪圖。系統設定「減少動態效果」時只畫靜止的島。
+ * 教師控制台 → 基本資料 → 🎬 動畫效果 可以改成「簡潔」（只有數字，跟以前一樣）。
+ */
+const isl = { raf: 0, poll: 0, t: 0, last: 0, yaw: .6, done: 0, ctx: null, w: 0, h: 0, dpr: 1, pets: [], lastSec: -1, geo: null, frames: 0 };
+function islandMode() { return state.settings.timerStyle !== 'simple'; }
+function renderTimerStyle() {
+  const on = islandMode();
+  const simple = $('#timerDisp'), wrap = $('#islWrap');
+  if (simple) simple.style.display = on ? 'none' : '';
+  if (wrap) wrap.style.display = on ? '' : 'none';
+  updateIslPill();
+  if (on) islStart();
+}
+function islVisible() {
+  if (!islandMode()) return false;
+  if (document.hidden) return false;
+  if (typeof isExamOpen === 'function' && isExamOpen()) return false;
+  const body = $('.tool-body[data-body="timer"]');
+  if (!body || body.classList.contains('hidden')) return false;
+  const page = body.closest('.page');
+  if (page && !page.classList.contains('active')) return false;
+  if (document.body.classList.contains('clean')) return false;
+  return true;
+}
+function updateIslPill() {
+  const pill = $('#islPill'), num = $('#islNum'); if (!pill || !num) return;
+  const l = Math.max(0, Math.ceil(timer.left));
+  const done = !timer.running && timer.left <= 0 && isl.done > 0;
+  num.textContent = done ? '⏰ 時間到！' : `${pad(Math.floor(l / 60))}:${pad(l % 60)}`;
+  pill.classList.toggle('warn', timer.running && l <= 10 && l > 0);
+  pill.classList.toggle('done', done);
+}
+// 最後 10 秒的滴答聲（只在 3D 島嶼模式）
+function islTickSound(l) {
+  if (!islandMode() || !actx || l === isl.lastSec) return;
+  isl.lastSec = l;
+  try {
+    const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+    o.type = 'square'; o.frequency.value = l <= 3 ? 1320 : 990;
+    g.gain.setValueAtTime(.05, t); g.gain.exponentialRampToValueAtTime(.001, t + .06);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + .07);
+  } catch (e) {}
+}
+function islFinish() {
+  if (!islandMode()) return;
+  isl.done = 3.2;   // 動物跳 3 秒
+  updateIslPill();
+  if (islVisible()) confetti();
+}
+
+/* ---- 幾何（固定的亂數，每次長一樣） ---- */
+function islRand(seed) { let s = seed; return () => (s = (s * 16807) % 2147483647) / 2147483647; }
+function islGeometry() {
+  if (isl.geo) return isl.geo;
+  const r = islRand(20261119), N = 11;
+  const top = [], band = [], mid = [];
+  for (let i = 0; i < N; i++) {
+    const a = i / N * Math.PI * 2, rr = .92 + r() * .16;
+    top.push([Math.cos(a) * rr, 0, Math.sin(a) * rr]);
+    band.push([Math.cos(a) * rr * .97, -.14, Math.sin(a) * rr * .97]);
+    const rm = .55 + r() * .15;
+    mid.push([Math.cos(a + .15) * rm, -.5 - r() * .12, Math.sin(a + .15) * rm]);
+  }
+  const tip = [.05, -1.25, -.02];
+  const trees = [];
+  for (let i = 0; i < 16; i++) {
+    const a = r() * Math.PI * 2, d = .45 + r() * .4;
+    const p = [Math.cos(a) * d, 0, Math.sin(a) * d];
+    if (Math.hypot(p[0] + .12, p[2] + .1) < .38) continue;   // 不要長在山上
+    if (Math.abs(a - .35) < .25 && d > .5) continue;          // 溪流旁邊空出來
+    trees.push({ p, s: .13 + r() * .08, hue: 120 + r() * 30 });
+  }
+  const mountain = { c: [-.12, 0, -.1], r: .34, h: .62, n: 6 };
+  const fallAt = 0;   // 瀑布在第 0 個邊
+  isl.geo = { N, top, band, mid, tip, trees, mountain, fallAt };
+  return isl.geo;
+}
+function islPetList() {
+  if (isl.pets.length && isl.frames % 60) return isl.pets;   // 每 60 張才重新看一次班上有哪些動物
+  const found = [...classSpecies()].map(spById).filter(s => s && s.cat === 'animal').map(s => s.emoji);
+  const list = (found.length ? found : ['🐕', '🐈']).slice(0, 4);
+  if (isl.pets.length !== list.length || isl.pets.some((p, i) => p.e !== list[i])) {
+    isl.pets = list.map((e, i) => ({ e, a: i * 1.7 + .4, r: .55 + (i % 2) * .18, sp: (i % 2 ? -1 : 1) * (.22 + i * .05), px: null, face: 1 }));
+  }
+  return isl.pets;
+}
+
+/* ---- 投影 ---- */
+function islProject(p, cam) {
+  const [x, y, z] = p;
+  const x1 = x * cam.cy - z * cam.sy, z1 = x * cam.sy + z * cam.cy;
+  const y2 = y * cam.cp - z1 * cam.sp, d = z1 * cam.cp + y * cam.sp;   // d：越大越靠近畫面
+  const k = cam.F / (cam.F - d);
+  return { x: cam.cx + x1 * cam.S * k, y: cam.cy0 - (y2 + cam.bob) * cam.S * k, d, k, x1, y2 };
+}
+function islShade(pts3, base, cam) {
+  // 用投影前的 3D 座標算面法向量，光從左上前方照過來
+  const P = pts3.map(p => { const x1 = p[0] * cam.cy - p[2] * cam.sy, z1 = p[0] * cam.sy + p[2] * cam.cy; return [x1, p[1] * cam.cp - z1 * cam.sp, z1 * cam.cp + p[1] * cam.sp]; });
+  const u = [P[1][0] - P[0][0], P[1][1] - P[0][1], P[1][2] - P[0][2]], v = [P[2][0] - P[0][0], P[2][1] - P[0][1], P[2][2] - P[0][2]];
+  let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const len = Math.hypot(...n) || 1; n = n.map(c => c / len);
+  if (n[2] < 0) n = n.map(c => -c);
+  const L = [-.45, .65, .6], ll = Math.hypot(...L);
+  const lit = Math.max(0, (n[0] * L[0] + n[1] * L[1] + n[2] * L[2]) / ll);
+  return `hsl(${base[0]},${base[1]}%,${Math.round(base[2] * (.55 + .6 * lit))}%)`;
+}
+function islPoly(ctx, pts, fill) {
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,.06)'; ctx.lineWidth = 1; ctx.stroke();
+}
+
+/* ---- 畫一張 ---- */
+function islDraw(ctx, W, H, t, dt) {
+  const g = islGeometry();
+  const S = Math.min(W * .3, H * .36);
+  const cam = { F: 4.2, cx: W / 2, cy0: H * .5, S, bob: Math.sin(t * .9) * .04, cp: Math.cos(.5), sp: Math.sin(.5), cy: Math.cos(isl.yaw), sy: Math.sin(isl.yaw) };
+  ctx.clearRect(0, 0, W, H);
+  // 影子
+  ctx.fillStyle = 'rgba(0,0,0,.12)';
+  ctx.beginPath(); ctx.ellipse(W / 2, H * .93, S * (.75 - cam.bob), S * .11, 0, 0, Math.PI * 2); ctx.fill();
+  const items = [];
+  // 下面的岩石
+  const N = g.N, faces = [];
+  for (let i = 0; i < N; i++) {
+    const j = (i + 1) % N;
+    faces.push({ p: [g.top[i], g.top[j], g.band[j], g.band[i]], c: [32, 45, 42] });
+    faces.push({ p: [g.band[i], g.band[j], g.mid[j], g.mid[i]], c: [28, 22, 40] });
+    faces.push({ p: [g.mid[i], g.mid[j], g.tip], c: [25, 18, 30] });
+  }
+  faces.map(f => ({ f, pp: f.p.map(p => islProject(p, cam)) }))
+    .map(o => ({ ...o, d: o.pp.reduce((s, q) => s + q.d, 0) / o.pp.length }))
+    .sort((a, b) => a.d - b.d)
+    .forEach(o => islPoly(ctx, o.pp, islShade(o.f.p, o.f.c, cam)));
+  // 島的上面（草地）
+  const c0 = [0, 0, 0];
+  for (let i = 0; i < N; i++) {
+    const j = (i + 1) % N;
+    islPoly(ctx, [c0, g.top[i], g.top[j]].map(p => islProject(p, cam)), `hsl(${100 + (i % 3) * 8},48%,${46 + (i % 2) * 6}%)`);
+  }
+  // 小溪：從山腳流到島邊
+  const fa = g.top[g.fallAt], fb = g.top[(g.fallAt + 1) % N];
+  const edge = [(fa[0] + fb[0]) / 2, 0, (fa[2] + fb[2]) / 2];
+  const river = [[-.05, .001, -.02], [edge[0] * .6, .001, edge[2] * .6 + .04], edge].map(p => islProject(p, cam));
+  ctx.strokeStyle = 'rgba(122,200,255,.95)'; ctx.lineWidth = Math.max(2, S * .045); ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(river[0].x, river[0].y); ctx.quadraticCurveTo(river[1].x, river[1].y, river[2].x, river[2].y); ctx.stroke();
+  // 瀑布（島的那一邊轉到前面時才看得到）
+  const e2 = islProject(edge, cam);
+  if (e2.d > -.05) {
+    const bot = islProject([edge[0] * 1.02, -1.0, edge[2] * 1.02], cam);
+    const wv = Math.max(4, S * .07);
+    const grd = ctx.createLinearGradient ? ctx.createLinearGradient(0, e2.y, 0, bot.y) : null;
+    if (grd && grd.addColorStop) { grd.addColorStop(0, 'rgba(170,225,255,.95)'); grd.addColorStop(1, 'rgba(170,225,255,0)'); ctx.fillStyle = grd; }
+    else ctx.fillStyle = 'rgba(170,225,255,.7)';
+    ctx.fillRect(e2.x - wv / 2, e2.y, wv, bot.y - e2.y);
+    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.5;
+    for (let k = 0; k < 4; k++) {
+      const yy = e2.y + ((t * 60 + k * 18) % Math.max(1, bot.y - e2.y));
+      ctx.beginPath(); ctx.moveTo(e2.x - wv / 3, yy); ctx.lineTo(e2.x - wv / 3, yy + 6); ctx.moveTo(e2.x + wv / 4, yy + 9); ctx.lineTo(e2.x + wv / 4, yy + 15); ctx.stroke();
+    }
+  }
+  // 山（低多邊形角錐、山頂有雪）
+  const m = g.mountain, peak = [m.c[0], m.h, m.c[2]];
+  for (let i = 0; i < m.n; i++) {
+    const a0 = i / m.n * Math.PI * 2, a1 = (i + 1) / m.n * Math.PI * 2;
+    const b0 = [m.c[0] + Math.cos(a0) * m.r, 0, m.c[2] + Math.sin(a0) * m.r], b1 = [m.c[0] + Math.cos(a1) * m.r, 0, m.c[2] + Math.sin(a1) * m.r];
+    const pts = [b0, b1, peak];
+    const pp = pts.map(p => islProject(p, cam));
+    items.push({ d: (pp[0].d + pp[1].d) / 2, draw: () => {
+      islPoly(ctx, pp, islShade(pts, [140, 25, 46], cam));
+      const s0 = [peak[0] + (b0[0] - peak[0]) * .3, peak[1] * .7, peak[2] + (b0[2] - peak[2]) * .3], s1 = [peak[0] + (b1[0] - peak[0]) * .3, peak[1] * .7, peak[2] + (b1[2] - peak[2]) * .3];
+      islPoly(ctx, [s0, s1, peak].map(p => islProject(p, cam)), islShade(pts, [200, 30, 95], cam));
+    } });
+  }
+  // 樹（兩層三角形，左右兩半不同亮度，看起來有面）
+  g.trees.forEach(tr => {
+    const b = islProject(tr.p, cam), top = islProject([tr.p[0], tr.s * 2.2, tr.p[2]], cam);
+    items.push({ d: b.d, draw: () => {
+      const w = tr.s * S * b.k * .55, hgt = b.y - top.y;
+      ctx.fillStyle = '#7a5434'; ctx.fillRect(b.x - w * .12, b.y - hgt * .22, w * .24, hgt * .22);
+      [[.15, 1], [.5, .78]].forEach(([y0, sc]) => {
+        const by = b.y - hgt * y0, ty = by - hgt * .62 * sc + hgt * .1;
+        ctx.fillStyle = `hsl(${tr.hue},45%,30%)`; ctx.beginPath(); ctx.moveTo(b.x - w * sc, by); ctx.lineTo(b.x, ty); ctx.lineTo(b.x, by); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = `hsl(${tr.hue},48%,42%)`; ctx.beginPath(); ctx.moveTo(b.x + w * sc, by); ctx.lineTo(b.x, ty); ctx.lineTo(b.x, by); ctx.closePath(); ctx.fill();
+      });
+    } });
+  });
+  // 動物
+  const pets = islPetList();
+  pets.forEach((pt, i) => {
+    pt.a += pt.sp * dt;
+    const jump = isl.done > 0 ? Math.abs(Math.sin(t * 7 + i)) * .28 : Math.abs(Math.sin(t * 5 + i * 2)) * .035;
+    const p = [Math.cos(pt.a) * pt.r, jump, Math.sin(pt.a) * pt.r];
+    const q = islProject(p, cam);
+    if (pt.px !== null && Math.abs(q.x - pt.px) > .05) pt.face = q.x > pt.px ? -1 : 1;   // 往右走 → 翻轉（emoji 預設臉朝左）
+    pt.px = q.x;
+    items.push({ d: q.d + .01, draw: () => {
+      const fs = Math.max(12, S * .2 * q.k);
+      ctx.save(); ctx.translate(q.x, q.y); ctx.scale(pt.face, 1);
+      ctx.font = `${fs}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText(pt.e, 0, 0); ctx.restore();
+    } });
+  });
+  // 雲
+  for (let i = 0; i < 3; i++) {
+    const a = t * (.05 + i * .02) + i * 2.1, rr = 1.45 + i * .12;
+    const q = islProject([Math.cos(a) * rr, .35 + i * .18, Math.sin(a) * rr], cam);
+    items.push({ d: q.d, draw: () => {
+      const s = S * .16 * q.k;
+      ctx.fillStyle = 'rgba(255,255,255,.88)';
+      [[0, 0, 1], [-.8, .15, .7], [.8, .15, .75], [.3, -.35, .7]].forEach(([dx, dy, r]) => { ctx.beginPath(); ctx.arc(q.x + dx * s, q.y + dy * s, r * s, 0, Math.PI * 2); ctx.fill(); });
+    } });
+  }
+  items.sort((a, b) => a.d - b.d).forEach(it => it.draw());
+  isl.frames++;
+}
+function islSetup() {
+  const cv = $('#islCanvas'); if (!cv) return null;
+  const rect = cv.getBoundingClientRect ? cv.getBoundingClientRect() : { width: 0, height: 0 };
+  const w = Math.round(rect.width || cv.clientWidth || 360), h = Math.round(rect.height || cv.clientHeight || 220);
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (!isl.ctx) { try { isl.ctx = cv.getContext('2d'); } catch (e) { isl.ctx = null; } }
+  if (!isl.ctx) return null;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  isl.w = w; isl.h = h; isl.dpr = dpr;
+  return isl.ctx;
+}
+function islFrame(ts) {
+  isl.raf = 0;
+  if (!islVisible()) { islSchedulePoll(); return; }
+  const now = ts || (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const reduce = prefersReducedMotion();
+  const minGap = reduce ? 1000 : 33;   // 最多每秒 30 張；減少動態效果時每秒 1 張、而且不動
+  if (isl.last && now - isl.last < minGap) { isl.raf = requestAnimationFrame(islFrame); return; }
+  const dt = isl.last ? Math.min(.1, (now - isl.last) / 1000) : 0;
+  isl.last = now;
+  const ctx = islSetup();
+  if (!ctx) { islSchedulePoll(2000); return; }
+  if (!reduce) { isl.t += dt; isl.yaw += dt * .16; }
+  if (isl.done > 0) isl.done = Math.max(0, isl.done - dt);
+  ctx.setTransform && ctx.setTransform(isl.dpr, 0, 0, isl.dpr, 0, 0);
+  islDraw(ctx, isl.w, isl.h, isl.t, reduce ? 0 : dt);
+  isl.raf = requestAnimationFrame(islFrame);
+}
+function islSchedulePoll(ms = 600) {
+  clearTimeout(isl.poll);
+  isl.last = 0;
+  isl.poll = setTimeout(() => islStart(), ms);
+}
+function islStart() {
+  clearTimeout(isl.poll);
+  if (isl.raf || !islandMode()) return;
+  isl.raf = requestAnimationFrame(islFrame);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) islStart(); });
 
 /* ---------------- 番茄鐘 ---------------- */
 const pomo = { focus: true, left: 25 * 60, running: false, end: 0, iv: null, count: 0 };
@@ -2784,35 +3051,268 @@ function confetti() {
   }
 }
 
-/* ---------------- 抽號 ---------------- */
+/* ---------------- 抽號 ----------------
+ * v1.11.0：抽號動畫。先用原本的規則決定結果（跳過今天請假、曠課的同學；勾「不重複」就不抽已抽過的），
+ * 再播動畫「演」到這個結果。五種動畫：🎰 拉霸機、🎡 幸運轉盤、🥚 扭蛋機、🃏 翻牌、🐾 班寵抽號。
+ * 「每次隨機」不會連續兩次同一種。點一下畫面或按「⏭ 跳過動畫」直接看結果。
+ * 教師控制台 → 基本資料 → 🎬 動畫效果 可以固定一種，或「關閉動畫」（回到原本的跳數字）。
+ */
 let drawn = [];
-$('#drawBtn').onclick = () => {
-  const noRep = $('#drawNoRepeat').checked;
-  // 今天請假／曠課的同學不會被抽到
-  let pool = presentSeats().filter(s => !noRep || !drawn.includes(s));
-  if (!pool.length) { toast(presentSeats().length ? '全部都抽過了，按「重置」重新開始' : '今天沒有可以抽的同學'); return; }
-  ensureAudio();
+const DRAW_STYLES = {
+  slot: { icon: '🎰', name: '拉霸機' },
+  wheel: { icon: '🎡', name: '幸運轉盤' },
+  gacha: { icon: '🥚', name: '扭蛋機' },
+  cards: { icon: '🃏', name: '翻牌' },
+  pet: { icon: '🐾', name: '班寵抽號' }
+};
+const DRAW_STYLE_KEYS = Object.keys(DRAW_STYLES);
+const DRAW_ANIM_OPTIONS = ['random', ...DRAW_STYLE_KEYS, 'off'];
+const TIMER_STYLE_OPTIONS = ['island', 'simple'];
+const prefersReducedMotion = () => { try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; } };
+let lastDrawStyle = '';
+// 這次要用哪一種動畫（'off'＝原本的跳數字）
+function chooseDrawStyle(setting = state.settings.drawAnim, last = lastDrawStyle, rnd = Math.random) {
+  if (setting === 'off') return 'off';
+  if (DRAW_STYLES[setting]) return setting;
+  const opts = DRAW_STYLE_KEYS.filter(k => k !== last);
+  return opts[Math.floor(rnd() * opts.length) % opts.length];
+}
+// 依原本規則選出這次的號碼（null＝沒得抽）
+function pickDrawSeat(noRep = $('#drawNoRepeat') ? $('#drawNoRepeat').checked : true, rnd = Math.random) {
+  const pool = presentSeats().filter(s => !noRep || !drawn.includes(s));
+  if (!pool.length) { toast(presentSeats().length ? '全部都抽過了，按「重置」重新開始' : '今天沒有可以抽的同學'); return null; }
+  return { pick: pool[Math.floor(rnd() * pool.length) % pool.length], pool };
+}
+function showDrawResult(pick) {
+  const el = $('#drawNum');
+  el.textContent = pad(pick); el.classList.remove('rolling');
+  $('#drawName').textContent = nameOf(pick) || `${pick} 號`;
+  $('#drawHistory').textContent = '已抽：' + drawn.map(pad).join('、');
+}
+// 原本的跳數字（關閉動畫、或系統設定「減少動態效果」時）
+function drawRollSimple(pick, pool) {
   const el = $('#drawNum'); el.classList.add('rolling');
   let k = 0;
   const iv = setInterval(() => {
     el.textContent = pad(pool[Math.floor(Math.random() * pool.length)]);
-    if (++k > 18) {
-      clearInterval(iv);
-      const pick = pool[Math.floor(Math.random() * pool.length)];
-      drawn.push(pick); el.textContent = pad(pick); el.classList.remove('rolling');
-      $('#drawName').textContent = nameOf(pick) || `${pick} 號`;
-      $('#drawHistory').textContent = '已抽：' + drawn.map(pad).join('、');
-      chime();
-    } else beepTick();
+    if (++k > 18) { clearInterval(iv); showDrawResult(pick); chime(); drawAnim.busy = false; }
+    else beepTick();
   }, 70);
-};
+}
+$('#drawBtn').onclick = () => startDraw();
+function startDraw(opt = {}) {
+  if (drawAnim.busy) return null;
+  const r = pickDrawSeat(opt.noRep, opt.rnd);
+  if (!r) return null;
+  ensureAudio();
+  drawn.push(r.pick);   // 結果先定好，動畫只是演出來
+  drawAnim.busy = true;
+  let style = opt.style || chooseDrawStyle();
+  if (style !== 'off' && prefersReducedMotion() && !opt.style) style = 'off';
+  if (style === 'off') { drawRollSimple(r.pick, r.pool); return { pick: r.pick, style }; }
+  lastDrawStyle = style;
+  runDrawAnim(style, r.pick, r.pool);
+  return { pick: r.pick, style };
+}
 function beepTick() {
   if (!actx) return;
   const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
   o.frequency.value = 1400; g.gain.setValueAtTime(.06, t); g.gain.exponentialRampToValueAtTime(.001, t + .04);
   o.connect(g).connect(actx.destination); o.start(t); o.stop(t + .05);
 }
-$('#drawReset').onclick = () => { drawn = []; $('#drawNum').textContent = '?'; $('#drawName').textContent = '按下按鈕抽一位幸運兒'; $('#drawHistory').textContent = ''; };
+$('#drawReset').onclick = () => { if (drawAnim.busy) return; drawn = []; $('#drawNum').textContent = '?'; $('#drawName').textContent = '按下按鈕抽一位幸運兒'; $('#drawHistory').textContent = ''; };
+
+/* ---- 抽號音效：小鼓滾奏（Web Audio 合成，不用下載音檔） ---- */
+function drumroll(sec = 3) {
+  try {
+    if (!actx || typeof actx.createBufferSource !== 'function') return () => {};
+    const src = actx.createBufferSource(), bp = actx.createBiquadFilter(), g = actx.createGain();
+    src.buffer = noiseBuf('white'); src.loop = true;
+    bp.type = 'bandpass'; bp.frequency.value = 1800; if (bp.Q) bp.Q.value = .7;
+    const t0 = actx.currentTime, hit = .055;
+    g.gain.setValueAtTime(0, t0);
+    for (let t = 0; t < sec; t += hit) {
+      const v = .05 + .1 * (t / sec);   // 越來越大聲
+      g.gain.setValueAtTime(v, t0 + t); g.gain.exponentialRampToValueAtTime(.004, t0 + t + hit * .9);
+    }
+    src.connect(bp).connect(g).connect(actx.destination);
+    src.start(t0); src.stop(t0 + sec + .1);
+    return () => { try { g.gain.cancelScheduledValues && g.gain.cancelScheduledValues(actx.currentTime); g.gain.setValueAtTime(0, actx.currentTime); src.stop(); } catch (e) {} };
+  } catch (e) { return () => {}; }
+}
+function revealSound() {
+  try {
+    chime();
+    if (!actx) return;
+    const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+    o.type = 'triangle'; o.frequency.setValueAtTime(392, t); o.frequency.exponentialRampToValueAtTime(784, t + .25);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(.2, t + .03); g.gain.exponentialRampToValueAtTime(.001, t + .6);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + .65);
+  } catch (e) {}
+}
+
+/* ---- 動畫舞台 ---- */
+const drawAnim = { busy: false, timers: [], stopDrum: null, finish: null, revealed: false, pick: 0, style: '', closeT: 0 };
+const DRAW_ANIM_MS = 3300;
+function dsLater(fn, ms) { const id = setTimeout(fn, ms); drawAnim.timers.push(id); return id; }
+const petEmoji = () => {
+  const pets = [...classSpecies()].map(spById).filter(s => s && s.cat === 'animal').map(s => s.emoji);
+  return pets[0] || '🐕';
+};
+function shuffled(arr, rnd = Math.random) { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+// 舞台上要顯示的其他號碼（一定包含 pick）
+function drawExtras(pick, pool, n) {
+  const others = shuffled(pool.filter(s => s !== pick)).slice(0, Math.max(0, n - 1));
+  return shuffled([pick, ...others]);
+}
+function runDrawAnim(style, pick, pool) {
+  const st = $('#drawStage'), area = $('#dsArea');
+  if (!st || !area) { showDrawResult(pick); drawAnim.busy = false; return; }
+  clearTimeout(drawAnim.closeT);
+  Object.assign(drawAnim, { timers: [], revealed: false, pick, style, finish: null });
+  $('#dsTitle').textContent = `${DRAW_STYLES[style].icon} ${DRAW_STYLES[style].name}`;
+  $('#dsResult').style.display = 'none';
+  $('#dsSkip').style.display = '';
+  $('#dsClose').style.display = 'none';
+  area.className = 'ds-area ds-' + style;
+  area.innerHTML = '';
+  st.style.display = 'flex';
+  $('#drawNum').classList.add('rolling'); $('#drawNum').textContent = '?';
+  drawAnim.stopDrum = drumroll(DRAW_ANIM_MS / 1000 - .2);
+  ({ slot: animSlot, wheel: animWheel, gacha: animGacha, cards: animCards, pet: animPet })[style](area, pick, pool);
+  dsLater(() => dsReveal(), DRAW_ANIM_MS);
+}
+function skipDrawAnim() {
+  if (!drawAnim.busy || drawAnim.revealed) return;
+  drawAnim.timers.forEach(clearTimeout); drawAnim.timers = [];
+  try { drawAnim.finish && drawAnim.finish(); } catch (e) {}
+  dsReveal();
+}
+function dsReveal() {
+  if (drawAnim.revealed) return;
+  drawAnim.revealed = true;
+  drawAnim.timers.forEach(clearTimeout); drawAnim.timers = [];
+  if (drawAnim.stopDrum) { drawAnim.stopDrum(); drawAnim.stopDrum = null; }
+  const pick = drawAnim.pick;
+  $('#dsNum').textContent = pad(pick);
+  $('#dsName').textContent = nameOf(pick) || `${pick} 號`;
+  $('#dsResult').style.display = '';
+  $('#dsSkip').style.display = 'none';
+  $('#dsClose').style.display = '';
+  showDrawResult(pick);
+  revealSound(); confetti();
+  drawAnim.closeT = setTimeout(() => closeDrawStage(), 3500);
+}
+function closeDrawStage() {
+  clearTimeout(drawAnim.closeT);
+  if (!drawAnim.revealed && drawAnim.busy) { skipDrawAnim(); return; }
+  const st = $('#drawStage'); if (st) st.style.display = 'none';
+  const area = $('#dsArea'); if (area) area.innerHTML = '';
+  drawAnim.busy = false;
+}
+(function bindDrawStage() {
+  const st = $('#drawStage'); if (!st) return;
+  st.addEventListener('click', e => {
+    if (e.target.closest('#dsClose')) return closeDrawStage();
+    if (!drawAnim.revealed) return skipDrawAnim();
+    closeDrawStage();
+  });
+})();
+
+// 🎰 拉霸機：兩個轉輪（十位數、個位數），一個一個停
+function animSlot(area, pick) {
+  const digits = pad(pick).split('');
+  const LOOPS = 5;
+  const strip = Array.from({ length: LOOPS * 10 }, (_, i) => `<i>${i % 10}</i>`).join('');
+  area.innerHTML = `<div class="slot-box"><div class="slot-lights">✦ ✦ ✦</div><div class="slot-reels">${digits.map((_, i) => `<div class="reel"><div class="strip" data-reel="${i}">${strip}</div></div>`).join('')}</div><div class="slot-lever" id="slotLever"></div></div>`;
+  const strips = $$('.strip', area);
+  const target = d => (LOOPS - 1) * 10 + Number(d);
+  const set = (el, idx, ms) => { el.style.transition = ms ? `transform ${ms}ms cubic-bezier(.12,.75,.2,1)` : 'none'; el.style.transform = `translateY(${-idx * 1.2}em)`; };
+  const lever = $('#slotLever');
+  dsLater(() => { if (lever) lever.classList.add('pull'); strips.forEach((el, i) => set(el, target(digits[i]), 1500 + i * 1000)); }, 60);
+  dsLater(() => beepTick(), 1600); dsLater(() => beepTick(), 2600);
+  drawAnim.finish = () => strips.forEach((el, i) => set(el, target(digits[i]), 0));
+}
+// 🎡 幸運轉盤：今天可以抽的座號排成一圈
+function wheelPath(i, n) {
+  if (n === 1) return 'M0 -100 A100 100 0 1 1 -0.01 -100 Z';
+  const a0 = i / n * 2 * Math.PI, a1 = (i + 1) / n * 2 * Math.PI;
+  const p = a => `${(100 * Math.sin(a)).toFixed(2)} ${(-100 * Math.cos(a)).toFixed(2)}`;
+  return `M0 0 L${p(a0)} A100 100 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${p(a1)} Z`;
+}
+function wheelTargetAngle(idx, n, turns = 5, jitter = 0) {
+  const seg = 360 / n, c = (idx + .5) * seg + jitter * seg * .3;
+  return turns * 360 + ((360 - c) % 360 + 360) % 360;
+}
+function animWheel(area, pick, pool) {
+  const seats = pool.slice().sort((a, b) => a - b);
+  const n = seats.length, idx = seats.indexOf(pick);
+  const fs = n > 30 ? 7 : n > 20 ? 9 : n > 12 ? 12 : 16;
+  const seg = 360 / n;
+  const segs = seats.map((s, i) => {
+    const mid = (i + .5) * seg;
+    return `<path d="${wheelPath(i, n)}" fill="hsl(${Math.round(i * 360 / n)},70%,${i % 2 ? 58 : 66}%)" stroke="rgba(255,255,255,.7)" stroke-width="${n > 30 ? .4 : .8}"/>
+      <text transform="rotate(${mid.toFixed(2)}) translate(0 ${n === 1 ? -50 : -74})" text-anchor="middle" dominant-baseline="middle" font-size="${fs}" font-weight="800" fill="#2b2b2b">${pad(s)}</text>`;
+  }).join('');
+  area.innerHTML = `<div class="wheel-box"><div class="wheel-pointer">▼</div><svg class="wheel" id="dsWheel" viewBox="-104 -104 208 208"><g>${segs}</g><circle r="12" fill="#fff" stroke="#c9a24a" stroke-width="3"/></svg></div>`;
+  const w = $('#dsWheel');
+  const end = wheelTargetAngle(idx, n, 5, Math.random() - .5);
+  w.dataset.target = String(end);
+  const set = ms => { w.style.transition = ms ? `transform ${ms}ms cubic-bezier(.1,.65,.12,1)` : 'none'; w.style.transform = `rotate(${end}deg)`; };
+  dsLater(() => set(3000), 60);
+  drawAnim.finish = () => set(0);
+}
+// 🥚 扭蛋機：轉把手、扭蛋掉下來、打開
+function animGacha(area, pick) {
+  const colors = ['#ff8a8a', '#ffc46b', '#8ad7a8', '#7ad7ff', '#c9a6ff', '#ffb3d0'];
+  const caps = Array.from({ length: 14 }, (_, i) => `<i style="left:${8 + (i * 37) % 78}%;top:${18 + (i * 23) % 56}%;background:${colors[i % colors.length]}"></i>`).join('');
+  const col = colors[pick % colors.length];
+  area.innerHTML = `<div class="gacha-box"><div class="g-dome">${caps}</div><div class="g-body"><div class="g-handle" id="gHandle"><span></span></div><div class="g-chute"></div></div>
+    <div class="g-cap" id="gCap" style="--cap:${col}"><i class="top"></i><i class="bot"></i><b>${pad(pick)}</b></div></div>`;
+  const dome = $('.g-dome', area), handle = $('#gHandle'), cap = $('#gCap');
+  dsLater(() => { dome.classList.add('shake'); handle.classList.add('turn'); }, 60);
+  dsLater(() => { beepTick(); cap.classList.add('drop'); }, 1400);
+  dsLater(() => { cap.classList.add('center'); }, 2200);
+  dsLater(() => { cap.classList.add('open'); }, 2800);
+  drawAnim.finish = () => { dome.classList.remove('shake'); cap.classList.add('drop', 'center', 'open', 'instant'); };
+}
+// 🃏 翻牌：洗牌後翻開一張
+function animCards(area, pick, pool) {
+  const n = Math.min(pool.length, 7);
+  const cards = drawExtras(pick, pool, n);
+  area.innerHTML = `<div class="cards-box">${cards.map((s, i) => `<div class="dcard" data-i="${i}"${s === pick ? ' data-pick="1"' : ''}><div class="dcard-in"><div class="face back">🌿</div><div class="face front">${s === pick ? pad(s) : '？'}</div></div></div>`).join('')}</div>`;
+  const els = $$('.dcard', area);
+  const place = order => order.forEach((el, k) => { el.style.left = `calc(50% + ${(k - (n - 1) / 2) * 13}% - 6%)`; });
+  let order = els.slice();
+  place(order);
+  [300, 700, 1100, 1500].forEach(ms => dsLater(() => { order = shuffled(order); place(order); beepTick(); }, ms));
+  const pickEl = els.find(el => el.dataset.pick);
+  dsLater(() => { els.forEach(el => { if (el !== pickEl) el.classList.add('fade'); }); pickEl.classList.add('chosen'); }, 2000);
+  dsLater(() => pickEl.classList.add('flip'), 2450);
+  drawAnim.finish = () => { els.forEach(el => { if (el !== pickEl) el.classList.add('fade'); }); pickEl.classList.add('chosen', 'flip', 'instant'); };
+}
+// 🐾 班寵抽號：班上的小動物跑來跑去，叼回號碼牌（emoji 臉朝左，往右跑時左右翻轉）
+function animPet(area, pick, pool) {
+  const n = Math.min(pool.length, 8);
+  const signs = drawExtras(pick, pool, n);
+  const xOf = i => 8 + (n === 1 ? 42 : i * (84 / (n - 1)));
+  area.innerHTML = `<div class="pet-box"><div class="pet-grass"></div>${signs.map((s, i) => `<div class="pet-sign${s === pick ? ' target' : ''}" style="left:${xOf(i)}%"><b>${pad(s)}</b><i></i></div>`).join('')}
+    <div class="pet-runner" id="petRunner" style="left:0%"><span class="pet-emo" id="petEmo">${petEmoji()}</span></div></div>`;
+  const runner = $('#petRunner'), emo = $('#petEmo'), ti = signs.indexOf(pick), tx = xOf(ti);
+  const sign = $('.pet-sign.target', area);
+  let x = 0;
+  const runTo = (nx, ms) => {
+    emo.style.transform = nx > x ? 'scaleX(-1)' : 'scaleX(1)';   // 往右跑要翻轉
+    runner.dataset.dir = nx > x ? 'right' : 'left';
+    runner.style.transition = `left ${ms}ms ease-in-out`; runner.style.left = nx + '%'; x = nx;
+  };
+  runner.classList.add('run');
+  dsLater(() => runTo(88, 850), 60);
+  dsLater(() => runTo(6, 800), 950);
+  dsLater(() => runTo(tx, 650), 1800);
+  dsLater(() => { runner.classList.remove('run'); runner.classList.add('fetch'); sign.classList.add('picked'); beepTick(); }, 2500);
+  drawAnim.finish = () => { runner.style.transition = 'none'; runner.style.left = tx + '%'; runner.classList.remove('run'); runner.classList.add('fetch'); sign.classList.add('picked'); };
+}
 
 /* ---------------- 音量偵測（含人聲雜音過濾） ---------------- */
 let mic = null;
@@ -3243,6 +3743,16 @@ function ctBasic(el) {
     <div class="field"><span>監考看板網址（按底部「📝 監考」打開；只能用 https:// 開頭的網址，所有班級共用）</span>
       <div class="exam-url-row"><input id="bExamUrl" type="url" value="${esc(s.examUrl || DEFAULT_EXAM_URL)}" placeholder="${esc(DEFAULT_EXAM_URL)}" autocomplete="off"><button type="button" class="btn" id="bExamReset">恢復預設網址</button></div></div>
     <label class="chk" style="margin:-4px 0 14px;font-size:14px"><input type="checkbox" id="bExamBtn" ${s.examBtn !== false ? 'checked' : ''}> 在最下面一排顯示「📝 監考」按鈕</label>
+    <h4 style="margin:8px 0 10px">🎬 動畫效果</h4>
+    <div class="row2">
+      <div class="field"><span>倒數計時的畫面</span><select id="bTimerStyle">
+        <option value="island"${s.timerStyle !== 'simple' ? ' selected' : ''}>🏝️ 3D 島嶼（預設）</option>
+        <option value="simple"${s.timerStyle === 'simple' ? ' selected' : ''}>簡潔（只有數字，舊平板比較順）</option></select></div>
+      <div class="field"><span>抽號動畫</span><select id="bDrawAnim">
+        <option value="random"${!s.drawAnim || s.drawAnim === 'random' ? ' selected' : ''}>每次隨機（預設）</option>
+        ${DRAW_STYLE_KEYS.map(k => `<option value="${k}"${s.drawAnim === k ? ' selected' : ''}>${DRAW_STYLES[k].icon} ${DRAW_STYLES[k].name}</option>`).join('')}
+        <option value="off"${s.drawAnim === 'off' ? ' selected' : ''}>關閉動畫（只跳數字）</option></select></div>
+    </div>
     <div class="err" id="bErr"></div>
     <div class="modal-actions"><button class="primary" id="bSave">儲存</button></div>`;
   $('#bExamReset').onclick = () => { $('#bExamUrl').value = DEFAULT_EXAM_URL; toast('已填回預設網址，按「儲存」才會生效'); };
@@ -3257,6 +3767,8 @@ function ctBasic(el) {
       return;
     }
     s.examUrl = ex.url; s.examBtn = $('#bExamBtn').checked;
+    s.timerStyle = TIMER_STYLE_OPTIONS.includes($('#bTimerStyle').value) ? $('#bTimerStyle').value : 'island';
+    s.drawAnim = DRAW_ANIM_OPTIONS.includes($('#bDrawAnim').value) ? $('#bDrawAnim').value : 'random';
     const oldSchool = s.school, oldClass = s.className, oldAnn = String(s.announcement || '').trim(), annTyped = $('#bAnn').value.trim();
     Object.assign(s, { school: $('#bSchool').value.trim(), className: $('#bClass').value.trim() || s.className, schoolYear: $('#bYear').value.trim(), semester: $('#bSem').value, announcement: $('#bAnn').value.trim(), studentEdit: $('#bStuEdit').checked });
     if (annTyped === oldAnn) refreshDefaultAnnouncement(s, oldSchool, oldClass); // 公告沒動、只改校名 → 預設歡迎詞跟著換校名
@@ -4398,6 +4910,7 @@ async function closeExam(force = false) {
   else if (exam.musicWasPlaying) { const a = musicAudio(); if (a && musicPlayingId) { musicTakeOver(); safePlay(a); } }
   renderAmbient(); renderMusicControls();
   exam.amb = 'none'; exam.musicWasPlaying = false;
+  islStart();
   return true;
 }
 function examFullscreen() {
@@ -4462,7 +4975,7 @@ document.addEventListener('click', e => {
 
 /* ---------------- 啟動 ---------------- */
 function renderAll() {
-  renderHeader(); renderSchedule(); renderContact(); renderCountdowns(); renderTaskWidget(); renderCritters(); renderExamBtn();
+  renderHeader(); renderSchedule(); renderContact(); renderCountdowns(); renderTaskWidget(); renderCritters(); renderExamBtn(); renderTimerStyle();
   const active = $('.page.active')?.dataset.page; if (active) renderPage(active);
 }
 bindTabs('left');
@@ -4489,7 +5002,7 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.11.0';
 const APP_UPDATED = '2026-11-19';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -4504,7 +5017,7 @@ if (typeof globalThis !== 'undefined') {
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,
     
-    APP_VERSION, askConfirm, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    APP_VERSION, askConfirm, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,

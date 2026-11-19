@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
 <link rel="icon" href="images/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png" sizes="180x180">
-<link rel="stylesheet" href="css/style.css?v=1.10.0">
+<link rel="stylesheet" href="css/style.css?v=1.11.0">
 </head>
 <body>
 
@@ -163,6 +163,10 @@
           </div>
           <div class="tool-body hidden" data-body="timer">
             <div class="big-clock" id="timerDisp">05:00</div>
+            <div class="isl-wrap" id="islWrap" style="display:none">
+              <div class="isl-pill" id="islPill"><span id="islNum">05:00</span></div>
+              <canvas class="isl-canvas" id="islCanvas" aria-label="3D 島嶼倒數動畫"></canvas>
+            </div>
             <div class="btn-row presets">
               <button data-min="1">1分</button><button data-min="3">3分</button><button data-min="5">5分</button>
               <button data-min="10">10分</button><button data-min="15">15分</button><button data-min="20">20分</button>
@@ -401,6 +405,17 @@
 <div id="cleanClock" class="clean-clock hidden"></div>
 <button id="fsZoomExit" type="button" style="display:none" title="離開放大模式">✕ 離開放大（Esc）</button>
 
+<!-- ===== 🎲 抽號動畫舞台 ===== -->
+<div id="drawStage" class="draw-stage" style="display:none" role="dialog" aria-label="抽號動畫">
+  <div class="ds-card">
+    <div class="ds-title" id="dsTitle">🎰 拉霸機</div>
+    <div class="ds-area" id="dsArea"></div>
+    <div class="ds-result" id="dsResult" style="display:none"><b id="dsNum"></b><span id="dsName"></span></div>
+    <div class="ds-actions"><button type="button" id="dsSkip">⏭ 跳過動畫</button><button type="button" id="dsClose" class="primary" style="display:none">好！</button></div>
+    <div class="ds-hint">點一下畫面也可以直接看結果</div>
+  </div>
+</div>
+
 <!-- ===== 📝 監考模式（全畫面蓋住儀表板） ===== -->
 <div id="examOverlay" class="exam-overlay" style="display:none" role="dialog" aria-label="監考模式">
   <div class="exam-bar">
@@ -431,6 +446,6 @@
 
 <script src="js/species.js"></script>
 <script src="js/voiceFilter.js"></script>
-<script src="js/app.js?v=1.10.0"></script>
+<script src="js/app.js?v=1.11.0"></script>
 </body>
 </html>
