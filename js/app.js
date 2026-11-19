@@ -89,6 +89,8 @@ function defaults() {
       autoSwitch: true, // 多班級：上課時間到依週課表自動切換班級
       attAnnounce: true, // 點名：跑馬燈自動加上今日缺席
       attNames: false, // 點名：首頁與跑馬燈要不要顯示姓名（畫面是公開的，預設只顯示座號）
+      examUrl: 'https://exam-smart-board-v6-persistent-audio.pages.dev/', // 📝 監考看板網址（所有班級共用）
+      examBtn: true, // 底部是否顯示「📝 監考」
       loc: { name: '臺東縣 金峰鄉', lat: 22.60, lon: 120.96, source: 'openmeteo', cwaKey: '', cwaDataset: 'F-D0047-037', cwaTown: '金峰鄉' }
     },
     schedule: DEFAULT_SCHEDULE.map(r => ({ ...r })),
@@ -137,6 +139,8 @@ function normalizeState(s) {
     const merged = { ...d, ...s, settings: { ...d.settings, ...s.settings, loc: { ...d.settings.loc, ...(s.settings?.loc || {}) } }, ui: { ...d.ui, ...s.ui }, forest: { ...d.forest, ...s.forest }, backup: { ...d.backup, ...(s.backup || {}) }, ttOverrides: (s.ttOverrides && typeof s.ttOverrides === 'object') ? s.ttOverrides : {}, music: normalizeMusic(s.music) };
     if (!Array.isArray(merged.homework)) merged.homework = [];
     merged.attendance = normalizeAttendance(merged.attendance);
+    if (!parseExamUrl(merged.settings.examUrl).ok) merged.settings.examUrl = d.settings.examUrl;
+    merged.settings.examBtn = merged.settings.examBtn !== false;
     migrateTaskAnnounce(merged);
     migrateHomework(merged);
     migrateAnnouncement(merged);
@@ -3235,10 +3239,24 @@ function ctBasic(el) {
       <div class="field"><span>緯度</span><input id="bLat" type="number" step="0.01" value="${L.lat}"></div>
       <div class="field"><span>經度</span><input id="bLon" type="number" step="0.01" value="${L.lon}"></div>
     </div>
+    <h4 style="margin:8px 0 10px">📝 監考看板</h4>
+    <div class="field"><span>監考看板網址（按底部「📝 監考」打開；只能用 https:// 開頭的網址，所有班級共用）</span>
+      <div class="exam-url-row"><input id="bExamUrl" type="url" value="${esc(s.examUrl || DEFAULT_EXAM_URL)}" placeholder="${esc(DEFAULT_EXAM_URL)}" autocomplete="off"><button type="button" class="btn" id="bExamReset">恢復預設網址</button></div></div>
+    <label class="chk" style="margin:-4px 0 14px;font-size:14px"><input type="checkbox" id="bExamBtn" ${s.examBtn !== false ? 'checked' : ''}> 在最下面一排顯示「📝 監考」按鈕</label>
     <div class="err" id="bErr"></div>
     <div class="modal-actions"><button class="primary" id="bSave">儲存</button></div>`;
+  $('#bExamReset').onclick = () => { $('#bExamUrl').value = DEFAULT_EXAM_URL; toast('已填回預設網址，按「儲存」才會生效'); };
   $('#bSrc').onchange = e => { $('#bCwa').classList.toggle('hidden', e.target.value !== 'cwa'); $('#bOm').classList.toggle('hidden', e.target.value === 'cwa'); };
   $('#bSave').onclick = async () => {
+    const ex = parseExamUrl($('#bExamUrl').value);
+    if (!ex.ok) {
+      $('#bErr').style.color = '';
+      $('#bErr').textContent = ex.reason === 'empty' ? '⚠️ 請填監考看板網址，或按「恢復預設網址」'
+        : ex.reason === 'scheme' ? '⚠️ 監考看板網址要用 https:// 開頭（安全連線）' : '⚠️ 監考看板網址格式不對，請確認有沒有打錯';
+      $('#bExamUrl').focus();
+      return;
+    }
+    s.examUrl = ex.url; s.examBtn = $('#bExamBtn').checked;
     const oldSchool = s.school, oldClass = s.className, oldAnn = String(s.announcement || '').trim(), annTyped = $('#bAnn').value.trim();
     Object.assign(s, { school: $('#bSchool').value.trim(), className: $('#bClass').value.trim() || s.className, schoolYear: $('#bYear').value.trim(), semester: $('#bSem').value, announcement: $('#bAnn').value.trim(), studentEdit: $('#bStuEdit').checked });
     if (annTyped === oldAnn) refreshDefaultAnnouncement(s, oldSchool, oldClass); // 公告沒動、只改校名 → 預設歡迎詞跟著換校名
@@ -4286,6 +4304,7 @@ $('#cleanBtn').onclick = () => { document.body.classList.add('clean'); $('#clean
 $('#cleanClock').onclick = () => { document.body.classList.remove('clean'); $('#cleanClock').classList.add('hidden'); };
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    if (isExamOpen()) return;   // 監考中不要用 Esc 關東西
     if (isZoomMode()) { setZoomMode(false); return; }
     if (!$('#modal').classList.contains('hidden') && !celebrateQueue.running) closeModal();
   }
@@ -4295,6 +4314,109 @@ document.addEventListener('keydown', e => {
 if (typeof globalThis !== 'undefined') {
   globalThis.__jlFs = { inIframe, fsEnabled, fsElement, setZoomMode, isZoomMode, openFullscreenNewTab, updateFsButtons };
 }
+
+/* ---------------- 📝 監考模式（v1.10.0） ----------------
+ * 底部「📝 監考」：用全畫面的嵌入框打開監考看板（網址可在 教師控制台 → 基本資料 修改）。
+ * 打開時蓋住整個儀表板（跑馬燈、山林動物都先停下來），暫停環境音和我的音樂，關掉後再恢復。
+ * 「✕ 回到儀表板」要再按一次確認，避免考試中不小心關掉；關掉後卸下看板（看板自己的設定存在看板網站裡，不會不見）。
+ * 不需要教師密碼。網址是所有班級共用的設定，包含在備份裡；完全重設會回到預設網址。
+ */
+const DEFAULT_EXAM_URL = 'https://exam-smart-board-v6-persistent-audio.pages.dev/';
+const EXAM_LOAD_TIMEOUT = 15000;
+function parseExamUrl(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  if (!v) return { ok: false, reason: 'empty' };
+  let u;
+  try { u = new URL(v); } catch (e) { return { ok: false, reason: 'bad' }; }
+  if (u.protocol !== 'https:') return { ok: false, reason: 'scheme' };
+  if (!u.hostname || !u.hostname.includes('.')) return { ok: false, reason: 'bad' };
+  return { ok: true, url: u.href };
+}
+function examUrl() {
+  const r = parseExamUrl(state.settings.examUrl);
+  return r.ok ? r.url : DEFAULT_EXAM_URL;
+}
+const exam = { open: false, amb: 'none', musicWasPlaying: false, timer: null, loaded: false };
+function isExamOpen() { return exam.open; }
+function renderExamBtn() {
+  const b = $('#examNavBtn');
+  if (b) b.style.display = state.settings.examBtn === false ? 'none' : '';
+}
+function examShowMsg(kind) {
+  const ld = $('#examLoading'), fl = $('#examFail');
+  if (ld) ld.style.display = kind === 'loading' ? '' : 'none';
+  if (fl) fl.style.display = kind === 'fail' ? '' : 'none';
+}
+function examLoad() {
+  const fr = $('#examFrame'); if (!fr) return;
+  const url = examUrl();
+  exam.loaded = false;
+  clearTimeout(exam.timer);
+  $$('#examNewTab, #examFailNewTab').forEach(a => { a.href = url; });
+  const lab = $('#examUrlLabel'); if (lab) { lab.textContent = url.replace(/^https:\/\//, '').replace(/\/$/, ''); lab.title = url; }
+  if (navigator.onLine === false) { fr.removeAttribute('src'); examShowMsg('fail'); return; }
+  examShowMsg('loading');
+  fr.onload = () => {
+    if (!exam.open || !fr.getAttribute('src')) return;
+    exam.loaded = true; clearTimeout(exam.timer); examShowMsg('');
+  };
+  fr.onerror = () => { if (exam.open) examShowMsg('fail'); };
+  exam.timer = setTimeout(() => { if (exam.open && !exam.loaded) examShowMsg('fail'); }, EXAM_LOAD_TIMEOUT);
+  fr.src = url;
+}
+function openExam() {
+  const ov = $('#examOverlay'); if (!ov || exam.open) return false;
+  // 先記下並暫停聲音
+  exam.amb = ambCur;
+  const a = musicAudio();
+  exam.musicWasPlaying = !!(a && musicPlayingId && !a.paused);
+  if (ambCur !== 'none') { stopAmbient(); $$('#ambList li').forEach(li => li.classList.remove('on')); }
+  if (exam.musicWasPlaying) { try { a.pause(); } catch (e) {} renderMusicControls(); }
+  exam.open = true;
+  document.body.classList.add('exam-open');
+  ov.style.display = 'flex';
+  const fsb = $('#examFsBtn'); if (fsb) fsb.style.display = fsEnabled() ? '' : 'none';
+  examLoad();
+  return true;
+}
+async function closeExam(force = false) {
+  if (!exam.open) return false;
+  if (!force) {
+    const yes = await askConfirm('確定結束監考、回到儀表板？（監考看板會關閉；看板自己的設定會保留在看板網站裡）', '結束監考');
+    if (!yes) return false;
+  }
+  const ov = $('#examOverlay'), fr = $('#examFrame');
+  try { if (fsElement() && ov && (fsElement() === ov || ov.contains(fsElement()))) await exitFs(); } catch (e) {}
+  clearTimeout(exam.timer);
+  if (fr) { fr.onload = null; fr.removeAttribute('src'); }
+  exam.open = false; exam.loaded = false;
+  if (ov) ov.style.display = 'none';
+  examShowMsg('');
+  document.body.classList.remove('exam-open');
+  // 恢復聲音
+  if (exam.amb && exam.amb !== 'none') playAmbient(exam.amb);
+  else if (exam.musicWasPlaying) { const a = musicAudio(); if (a && musicPlayingId) { musicTakeOver(); safePlay(a); } }
+  renderAmbient(); renderMusicControls();
+  exam.amb = 'none'; exam.musicWasPlaying = false;
+  return true;
+}
+function examFullscreen() {
+  const ov = $('#examOverlay'); if (!ov) return;
+  if (fsElement()) { exitFs(); return; }
+  reqFs(ov).catch(() => toast('這裡不能使用全螢幕（例如嵌在協作平台裡）。監考畫面已經填滿這個框，也可以按「↗ 用新分頁打開」', 4500));
+}
+function updateExamFsLabel() {
+  const b = $('#examFsBtn'); if (b) b.textContent = fsElement() ? '⛶ 離開全螢幕' : '⛶ 全螢幕';
+}
+$('#examNavBtn') && ($('#examNavBtn').onclick = () => openExam());
+$('#examClose') && ($('#examClose').onclick = () => closeExam());
+$('#examFsBtn') && ($('#examFsBtn').onclick = () => examFullscreen());
+$('#examReload') && ($('#examReload').onclick = () => examLoad());
+$('#examRetry') && ($('#examRetry').onclick = () => examLoad());
+document.addEventListener('fullscreenchange', updateExamFsLabel);
+document.addEventListener('webkitfullscreenchange', updateExamFsLabel);
+window.addEventListener('online', () => { if (exam.open && !exam.loaded) examLoad(); });
+renderExamBtn();
 
 /* ---------------- 主題色 ---------------- */
 const THEMES = [
@@ -4340,7 +4462,7 @@ document.addEventListener('click', e => {
 
 /* ---------------- 啟動 ---------------- */
 function renderAll() {
-  renderHeader(); renderSchedule(); renderContact(); renderCountdowns(); renderTaskWidget(); renderCritters();
+  renderHeader(); renderSchedule(); renderContact(); renderCountdowns(); renderTaskWidget(); renderCritters(); renderExamBtn();
   const active = $('.page.active')?.dataset.page; if (active) renderPage(active);
 }
 bindTabs('left');
@@ -4367,7 +4489,7 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.9.1';
+const APP_VERSION = '1.10.0';
 const APP_UPDATED = '2026-11-19';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -4382,7 +4504,7 @@ if (typeof globalThis !== 'undefined') {
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,
     
-    APP_VERSION, askConfirm, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    APP_VERSION, askConfirm, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,

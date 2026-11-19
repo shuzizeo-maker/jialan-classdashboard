@@ -725,7 +725,7 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
 .bottomnav .app-ver { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 99px; font-size: 11px; font-weight: 700; color: #fff; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.25); vertical-align: 1px; }
 
 /* v1.5.1 自製確認視窗＋自訂任務捷徑 */
-.ask-confirm { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.45); padding: 16px; }
+.ask-confirm { position: fixed; inset: 0; z-index: 9800; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.45); padding: 16px; }
 .ask-card { max-width: 440px; width: 100%; padding: 22px; border-radius: 18px; background: rgba(30,30,50,.92); color: #fff; box-shadow: 0 10px 40px rgba(0,0,0,.4); }
 .ask-msg { white-space: pre-line; line-height: 1.7; margin: 0 0 18px; font-size: 1.05rem; }
 .ask-actions { display: flex; justify-content: flex-end; gap: 10px; }
@@ -903,3 +903,21 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
 .bk-snap-btns { display: flex; gap: 6px; }
 .bk-snap-btns .btn { padding: 5px 12px; }
 .modal-card .sub.bk-warn { background: rgba(245,196,107,.12); border: 1px solid rgba(245,196,107,.35); border-radius: 10px; padding: 8px 12px; color: var(--text); }
+
+/* ===== 📝 監考模式（v1.10.0）：蓋住整個儀表板 ===== */
+.exam-overlay { position: fixed; inset: 0; z-index: 9500; flex-direction: column; background: #0d1f1a; }
+.exam-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; flex: none; flex-wrap: wrap; }
+.exam-bar .exam-url { color: rgba(255,255,255,.55); font-size: 12px; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exam-bar .exam-spacer { flex: 1; }
+.exam-bar button, .exam-bar a, .exam-fail button, .exam-fail a { border: 1px solid rgba(255,255,255,.35); background: rgba(255,255,255,.1); color: #fff; border-radius: 999px; padding: 4px 12px; font-size: 13px; text-decoration: none; cursor: pointer; }
+.exam-bar button:hover, .exam-bar a:hover { background: rgba(255,255,255,.22); }
+.exam-bar .exam-close { background: rgba(200,70,60,.85); border-color: transparent; font-weight: 700; }
+.exam-stage { position: relative; flex: 1; min-height: 0; background: #fff; }
+.exam-stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.exam-msg { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); background: rgba(13,31,26,.92); color: #fff; padding: 16px 22px; border-radius: 16px; font-size: 18px; text-align: center; max-width: min(560px, 90vw); box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+.exam-fail p { font-size: 15px; line-height: 1.6; margin: 8px 0 12px; }
+body.exam-open #app, body.exam-open #scene, body.exam-open #cleanClock, body.exam-open .backup-banner { visibility: hidden; }
+body.exam-open .critter, body.exam-open .marquee, body.exam-open #annText { animation-play-state: paused !important; }
+body.exam-open .toast { z-index: 9700; }
+.exam-url-row { display: flex; gap: 8px; }
+.exam-url-row input { flex: 1; min-width: 0; }
