@@ -1773,9 +1773,10 @@ $('#ambVol').addEventListener('input', e => {
 });
 
 /* ---------------- 我的音樂（播放器） ----------------
- * 本機檔：Chrome／Edge 用 showOpenFilePicker，把檔案 handle 存在 IndexedDB（重新整理後從原位置再讀）；
- * 其他瀏覽器或嵌在協作平台裡：改用一般檔案選擇，副本存在這台電腦瀏覽器的 IndexedDB。
- * 都不會上傳到伺服器。
+ * 本機檔：Chrome／Edge 直接打開網址時用 showOpenFilePicker，把檔案 handle 存在 IndexedDB（重新整理後從原位置再讀）；
+ * 嵌在 Google 協作平台等網頁裡（iframe）、Firefox、Safari：不能記住電腦裡的檔案位置，
+ * 改用一般檔案選擇（📁 上傳檔案／📂 加入整個資料夾），把音樂「複製一份」存在這個瀏覽器的 IndexedDB，
+ * 重新整理後在原畫面就能播，不需要開新分頁（v1.9.1）。都不會上傳到伺服器。
  */
 const MUSIC_ACCEPT = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.webm'];
 const LOOP_INFO = { off: { icon: '➡️', label: '不循環（播完清單就停）' }, one: { icon: '🔂', label: '單曲循環' }, all: { icon: '🔁', label: '清單循環' } };
@@ -1787,6 +1788,37 @@ let _musicReplaceId = '';     // 「重新指定」時要換掉的曲目
 const musicMissing = new Set();   // 找不到檔案、需重新指定的曲目
 const musicNeedPerm = new Set();  // 需要按一下重新授權的曲目
 const musicMem = {};              // 本次開啟期間的檔案（IndexedDB 存不下時的後援）
+const musicNotSaved = new Set();  // 瀏覽器存不下、只能這次播放的曲目
+const MUSIC_BIG_FILE = 50 * 1024 * 1024;   // 單一檔案超過這個大小會提醒
+const MUSIC_MAX_FOLDER = 200;              // 一次從資料夾加入的上限
+function fmtMB(bytes) {
+  const mb = (Number(bytes) || 0) / 1048576;
+  return mb >= 100 ? `${Math.round(mb)} MB` : `${mb.toFixed(1)} MB`;
+}
+// 這次要用「存一份在瀏覽器裡」的方式嗎？（iframe、或不支援 showOpenFilePicker）
+function musicUsesBrowserCopy() { return inIframe() || !canPickMusicFile(); }
+function canPickMusicFolder() {
+  try { return 'webkitdirectory' in document.createElement('input'); } catch (e) { return false; }
+}
+// 瀏覽器還剩多少空間（不知道時回 null）
+async function musicFreeSpace() {
+  try {
+    if (!navigator.storage || typeof navigator.storage.estimate !== 'function') return null;
+    const e = await navigator.storage.estimate();
+    if (!e || !isFinite(e.quota)) return null;
+    return Math.max(0, (e.quota || 0) - (e.usage || 0));
+  } catch (e) { return null; }
+}
+let _musicPersistAsked = false;
+function musicAskPersist() {
+  if (_musicPersistAsked) return; _musicPersistAsked = true;
+  try { if (navigator.storage && typeof navigator.storage.persist === 'function') navigator.storage.persist().catch(() => {}); } catch (e) {}
+}
+// 存在這個瀏覽器裡的音樂：幾首、多大
+function musicStoredSummary() {
+  const list = musicTracks().filter(t => t.kind === 'file' && t.store === 'blob' && !musicMissing.has(t.id) && !musicNotSaved.has(t.id));
+  return { count: list.length, bytes: list.reduce((s, t) => s + (Number(t.size) || 0), 0) };
+}
 
 const musicAudio = () => document.getElementById('musicAudio');
 const musicVolume = () => { const v = $('#ambVol'); return Math.max(0, Math.min(1, (v ? Number(v.value) : 50) / 100)); };
@@ -1827,7 +1859,7 @@ function removeTrack(id) {
   if (musicPlayingId === id) stopMusic(true);
   list.splice(i, 1);
   if (state.music.currentId === id) state.music.currentId = '';
-  musicMissing.delete(id); musicNeedPerm.delete(id); delete musicMem[id];
+  musicMissing.delete(id); musicNeedPerm.delete(id); musicNotSaved.delete(id); delete musicMem[id];
   idbDel('musicFile_' + id); idbDel('musicBlob_' + id);
   save(); renderMusic();
   return true;
@@ -1974,7 +2006,6 @@ async function pickMusicFiles(replaceId = '') {
       if (!(e && e.name === 'SecurityError')) { toast('無法開啟檔案選擇，改用一般上傳'); }
     }
   }
-  if (inIframe()) toast('目前嵌在別的網頁裡，改用一般上傳（音樂會存在這台電腦的瀏覽器）。想直接讀電腦裡的檔案，請用新分頁打開儀表板。', 5000);
   const inp = $('#musicFileInput');
   if (inp) { inp.multiple = !replaceId; inp.value = ''; inp.click(); }
 }
@@ -2000,10 +2031,30 @@ async function addMusicHandles(handles, replaceId = '') {
   if (n) toast(replaceId ? '✅ 已重新指定檔案' : `✅ 已加入 ${n} 首（檔案仍在你的電腦裡）`);
   if (skip) toast(`有 ${skip} 個檔案不是音樂檔，已略過`);
 }
-async function addMusicFiles(files, replaceId = '') {
-  let n = 0, skip = 0, mem = 0;
-  for (const f of files || []) {
-    if (!isAudioFile(f)) { skip++; continue; }
+function pickMusicFolder() {
+  const inp = $('#musicFolderInput');
+  if (!inp || !canPickMusicFolder()) return toast('這個瀏覽器不能選資料夾，請按「📁 上傳檔案」一次選多首');
+  inp.value = ''; inp.click();
+}
+async function addMusicFiles(files, replaceId = '', opt = {}) {
+  let n = 0, skip = 0, mem = 0, big = 0;
+  files = [...(files || [])];
+  const audio = files.filter(isAudioFile);
+  skip = files.length - audio.length;
+  let over = 0;
+  if (opt.folder && audio.length > MUSIC_MAX_FOLDER) { over = audio.length - MUSIC_MAX_FOLDER; audio.length = MUSIC_MAX_FOLDER; }
+  if (opt.folder && !audio.length) {
+    toast('這個資料夾裡沒有音樂檔（mp3、wav、ogg、m4a、aac、flac、webm）', 3500);
+    return { n: 0, skip, mem: 0 };
+  }
+  const need = audio.reduce((s, f) => s + (f.size || 0), 0);
+  const free = await musicFreeSpace();
+  if (free !== null && need > free) {
+    toast(`⚠️ 瀏覽器空間可能不夠：這次選了 ${fmtMB(need)}，大約只剩 ${fmtMB(free)}。放不下的歌，重新整理後要重新選擇`, 6000);
+  }
+  if (audio.length) musicAskPersist();
+  for (const f of audio) {
+    if ((f.size || 0) > MUSIC_BIG_FILE) big++;
     let t;
     if (replaceId && musicTrack(replaceId)) {
       t = musicTrack(replaceId);
@@ -2013,13 +2064,18 @@ async function addMusicFiles(files, replaceId = '') {
       musicMissing.delete(t.id); musicNeedPerm.delete(t.id);
     } else t = addFileTrackMeta({ name: f.name, size: f.size, type: f.type, store: 'blob' });
     musicMem[t.id] = f;
-    try { await idbSet('musicBlob_' + t.id, f); } catch (e) { mem++; }
+    try { await idbSet('musicBlob_' + t.id, f); musicNotSaved.delete(t.id); } catch (e) { mem++; musicNotSaved.add(t.id); }
     n++;
   }
   save(); renderMusic();
-  if (n) toast(replaceId ? '✅ 已重新指定檔案' : `✅ 已加入 ${n} 首（存在這台電腦的瀏覽器裡，不會上傳）`);
-  if (mem) toast(`瀏覽器空間不足，有 ${mem} 首重新整理後要重新選擇`, 3500);
-  if (skip) toast(`有 ${skip} 個檔案不是音樂檔，已略過`);
+  const msgs = [];
+  if (n) msgs.push(replaceId ? '✅ 已重新指定檔案（存一份在這個瀏覽器裡）' : `✅ 已加入 ${n} 首，存一份在這個瀏覽器裡（共 ${fmtMB(need)}，不會上傳），重新整理後也能播`);
+  if (mem) msgs.push(`⚠️ 瀏覽器空間不足，有 ${mem} 首只能這次播放，重新整理後要重新選擇`);
+  if (big) msgs.push(`有 ${big} 首檔案比較大（超過 ${fmtMB(MUSIC_BIG_FILE)}），會佔用較多瀏覽器空間`);
+  if (over) msgs.push(`資料夾裡的音樂太多，只加入前 ${MUSIC_MAX_FOLDER} 首`);
+  if (skip && !opt.folder) msgs.push(`有 ${skip} 個檔案不是音樂檔，已略過`);
+  if (msgs.length) toast(msgs.join('　'), mem || big || over ? 6000 : 3500);
+  return { n, skip, mem, big, over };
 }
 
 /* ---- 新增：網址 ---- */
@@ -2115,8 +2171,23 @@ function renderMusic() {
       <button type="button" class="mdel" data-mdel="${esc(t.id)}" title="從清單移除（不會刪除電腦裡的檔案）">✕</button>
     </li>`;
   }).join('');
-  const em = $('#musicEmpty'); if (em) em.style.display = list.length ? 'none' : '';
+  const em = $('#musicEmpty');
+  if (em) {
+    em.style.display = list.length ? 'none' : '';
+    em.textContent = musicUsesBrowserCopy()
+      ? '還沒有自己的音樂。可以上傳電腦裡的音樂檔（會存一份在這個瀏覽器裡），或貼上音樂網址。'
+      : '還沒有自己的音樂。可以上傳電腦裡的檔案，或貼上音樂網址。';
+  }
   ul.style.display = list.length ? '' : 'none';
+  const note = $('#musicStoreNote');
+  if (note) {
+    const sum = musicStoredSummary();
+    note.style.display = sum.count ? '' : 'none';
+    note.textContent = sum.count
+      ? `🗂️ 有 ${sum.count} 首存在這個瀏覽器裡（共 ${fmtMB(sum.bytes)}），重新整理後也能播。清除瀏覽器資料、換電腦或換瀏覽器時會不見，原始檔請留著。`
+      : '';
+  }
+  const fb = $('#musicAddFolder'); if (fb) fb.style.display = canPickMusicFolder() ? '' : 'none';
   showMusicPerm();
   renderMusicControls();
   if (musicPlayingId) $$('#ambList li').forEach(li => li.classList.remove('on'));
@@ -2173,6 +2244,17 @@ function renderMusic() {
   $('#musicAddFile').onclick = () => {
     if (musicNeedsAuth(() => pickMusicFiles())) return;
     pickMusicFiles();
+  };
+  const fbtn = $('#musicAddFolder');
+  if (fbtn) fbtn.onclick = () => {
+    if (musicNeedsAuth(() => pickMusicFolder())) return;
+    pickMusicFolder();
+  };
+  const finp = $('#musicFolderInput');
+  if (finp) finp.onchange = e => {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (files.length) addMusicFiles(files, '', { folder: true });
   };
   $('#musicAddUrl').onclick = () => {
     const open = () => {
@@ -3586,10 +3668,15 @@ function idbSet(key, val) {
       req.onerror = () => reject(req.error);
       req.onsuccess = () => {
         const db = req.result;
-        const tx = db.transaction('kv', 'readwrite');
-        tx.objectStore('kv').put(val, key);
+        let tx;
+        try {
+          tx = db.transaction('kv', 'readwrite');
+          tx.objectStore('kv').put(val, key);
+        } catch (e) { try { db.close(); } catch (e2) {} return reject(e); }   // 例如 DataCloneError
         tx.oncomplete = () => { db.close(); resolve(); };
         tx.onerror = () => { db.close(); reject(tx.error); };
+        // 空間不夠（QuotaExceededError）時交易會被中止，只會觸發 onabort
+        tx.onabort = () => { db.close(); reject(tx.error || new Error('abort')); };
       };
     } catch (e) { reject(e); }
   });
@@ -4280,7 +4367,7 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.9.1';
 const APP_UPDATED = '2026-11-19';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -4297,7 +4384,7 @@ if (typeof globalThis !== 'undefined') {
     
     APP_VERSION, askConfirm, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
-    normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop,
+    normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,
     getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, getMusicMissing: () => [...musicMissing], musicMem,
     isBackupDue, lastDueSlot, nextBackupAt, backupDays, backupCfg, backupFileName, backupPayload, DEFAULT_BACKUP, maybeAutoBackup,

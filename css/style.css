@@ -267,6 +267,7 @@ body.unlocked #consoleBtn { color: var(--gold); background: rgba(245,196,107,.15
 .music-list .mdel { flex: none; border: 0; background: transparent; color: var(--muted); opacity: .5; font-size: 14px; padding: 0 2px; }
 .music-list .mdel:hover { opacity: 1; color: #ff8a7a; }
 .music-empty { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.music-store { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .vol { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .vol input { flex: 1; }
 input[type=range] { accent-color: var(--accent); }
