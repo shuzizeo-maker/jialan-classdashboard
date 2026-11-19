@@ -46,6 +46,30 @@ function inferSlot(name) {
 }
 const SUBJECTS = ['國語', '數學', '英語', '社會', '自然', '健康', '體育', '音樂', '視覺藝術', '表演藝術', '綜合', '本土語', '族語', '閩南語', '資訊', '閱讀', '彈性', '生活', '學扶', '社團', '班會', '導師時間'];
 
+// 預設跑馬燈歡迎詞：只放校名，班級名稱顯示時才自動接上（避免寫死某一班）
+const ANN_WELCOME = '歡迎蒞臨';
+const OLD_DEFAULT_ANN = '歡迎蒞臨臺東縣金峰鄉嘉蘭國民小學六年甲班'; // v1.8.1 以前的預設（寫死六年甲班）
+function defaultAnnouncement(school) { return ANN_WELCOME + String(school || '').trim(); }
+// 公告是不是「沒改過的預設歡迎詞」（舊版預設、或「歡迎蒞臨＋校名（＋班級）」）
+function isDefaultAnnouncement(text, school, className) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (t === OLD_DEFAULT_ANN || t === defaultAnnouncement('臺東縣金峰鄉嘉蘭國民小學')) return true;
+  const sc = String(school || '').trim();
+  if (!sc) return false;
+  const base = defaultAnnouncement(sc);
+  return t === base || (!!className && t === base + String(className).trim());
+}
+// 舊資料：公告還是舊版預設（含寫死的六年甲班）→ 換成「歡迎蒞臨＋校名」，班級名稱改由畫面自動接上
+function migrateAnnouncement(st) {
+  const s = st && st.settings; if (!s) return false;
+  if (String(s.announcement || '').trim() === OLD_DEFAULT_ANN) { s.announcement = defaultAnnouncement(s.school); return true; }
+  return false;
+}
+// 改了校名：如果公告還是預設歡迎詞，跟著換成新校名
+function refreshDefaultAnnouncement(s, oldSchool, oldClass) {
+  if (isDefaultAnnouncement(s.announcement, oldSchool, oldClass)) s.announcement = defaultAnnouncement(s.school);
+}
 function defaults() {
   return {
     settings: {
@@ -55,7 +79,7 @@ function defaults() {
       schoolYear: '',
       semester: '',
       studentEdit: false,
-      announcement: '歡迎蒞臨臺東縣金峰鄉嘉蘭國民小學六年甲班',
+      announcement: defaultAnnouncement('臺東縣金峰鄉嘉蘭國民小學'), // 班級名稱由 withClassName 自動接在校名後面
       theme: 'default',
       maxSeat: 20,
       vacant: [],
@@ -63,6 +87,8 @@ function defaults() {
       pwHash: '',
       mode: 'single', // single＝導師（一個班）；multi＝科任老師（多個班）
       autoSwitch: true, // 多班級：上課時間到依週課表自動切換班級
+      attAnnounce: true, // 點名：跑馬燈自動加上今日缺席
+      attNames: false, // 點名：首頁與跑馬燈要不要顯示姓名（畫面是公開的，預設只顯示座號）
       loc: { name: '臺東縣 金峰鄉', lat: 22.60, lon: 120.96, source: 'openmeteo', cwaKey: '', cwaDataset: 'F-D0047-037', cwaTown: '金峰鄉' }
     },
     schedule: DEFAULT_SCHEDULE.map(r => ({ ...r })),
@@ -71,7 +97,7 @@ function defaults() {
     ttClass: {}, // 多班級：週課表每一格是哪一班 { 1: { p3: 'c_xxx' } }
     classes: [], // 多班級：[{ id, name, subject, data }]，目前班級的 data 為 null（資料在最上層）
     curClass: '',
-    backup: { auto: false, freq: 'daily', weekdays: [5], time: '15:00', lastAt: '', lastName: '', lastError: '', folderName: '' },
+    backup: { auto: false, freq: 'daily', weekdays: [5], time: '15:00', lastAt: '', lastName: '', lastError: '', folderName: '', target: '' },
     music: { tracks: [], loop: 'all', currentId: '' }, // 我的音樂：只存清單，音檔本身留在電腦
     contact: {},
     countdowns: [],
@@ -85,6 +111,7 @@ function defaults() {
     // 作業檢查：依「佈置日」追蹤，今天佈置的明天才開始檢查
     homework: [],
     _hwMigrated: false,
+    attendance: {}, // 點名：{ '2026-11-19': { 3: 'sick', 12: 'personal' } }；{} ＝ 已點名、全部出席
     students: {},
     forest: { level: 1, points: 0 },
     log: [],
@@ -109,8 +136,14 @@ function normalizeState(s) {
     if (m && s.settings) { s.settings.schoolYear = m[1]; if (m[2] && !s.settings.semester) s.settings.semester = { 1: '一', 2: '二' }[m[2]] || m[2]; }
     const merged = { ...d, ...s, settings: { ...d.settings, ...s.settings, loc: { ...d.settings.loc, ...(s.settings?.loc || {}) } }, ui: { ...d.ui, ...s.ui }, forest: { ...d.forest, ...s.forest }, backup: { ...d.backup, ...(s.backup || {}) }, ttOverrides: (s.ttOverrides && typeof s.ttOverrides === 'object') ? s.ttOverrides : {}, music: normalizeMusic(s.music) };
     if (!Array.isArray(merged.homework)) merged.homework = [];
+    merged.attendance = normalizeAttendance(merged.attendance);
     migrateTaskAnnounce(merged);
     migrateHomework(merged);
+    migrateAnnouncement(merged);
+    (Array.isArray(merged.classes) ? merged.classes : []).forEach(c => {
+      const cs = c && c.data && c.data.settings;
+      if (cs && String(cs.announcement || '').trim() === OLD_DEFAULT_ANN) cs.announcement = defaultAnnouncement(merged.settings.school);
+    });
     return ensureClasses(merged);
   }
 }
@@ -123,13 +156,13 @@ function normalizeState(s) {
  * 全部共用：校名、學年學期、作息時間、週課表（含班級標記）、臨時調課、倒數日、
  *           天氣、環境音、我的音樂、備份設定、密碼、主題。
  */
-const CLASS_KEYS = ['students', 'done', 'contact', 'homework', '_hwMigrated', 'forest', 'log', 'taskDefs'];
+const CLASS_KEYS = ['students', 'done', 'contact', 'homework', '_hwMigrated', 'forest', 'log', 'taskDefs', 'attendance'];
 const CLASS_SETTINGS = ['className', 'maxSeat', 'vacant', 'names', 'announcement'];
 const CLASS_UI = ['widgetTask', 'pageTask'];
 const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
 function freshClassData(name, { maxSeat = 20, vacant = [], taskDefs } = {}) {
   return {
-    students: {}, done: {}, contact: {}, homework: [], _hwMigrated: true,
+    students: {}, done: {}, contact: {}, homework: [], _hwMigrated: true, attendance: {},
     forest: { level: 1, points: 0 }, log: [],
     taskDefs: clone(taskDefs || defaults().taskDefs),
     settings: { className: String(name || ''), maxSeat: Number(maxSeat) || 20, vacant: [...(vacant || [])], names: {}, announcement: '' },
@@ -156,6 +189,7 @@ function putClassData(st, data) {
   if (!st.students || typeof st.students !== 'object') st.students = {};
   if (!st.done || typeof st.done !== 'object') st.done = {};
   if (!st.contact || typeof st.contact !== 'object') st.contact = {};
+  st.attendance = normalizeAttendance(st.attendance);
   if (!Array.isArray(st.homework)) st.homework = [];
   if (!Array.isArray(st.log)) st.log = [];
   if (!Array.isArray(st.taskDefs)) st.taskDefs = f.taskDefs;
@@ -208,6 +242,80 @@ function migrateTaskAnnounce(st) {
   if (st.taskDefs.some(t => 'announce' in t)) return;
   st.taskDefs.forEach(t => { t.announce = /訂正/.test(String(t.name || '')); });
 }
+/* ---------------- 點名（資料層） ----------------
+ * state.attendance = { 'YYYY-MM-DD': { 座號: 狀態 } }，每班分開（多班級時跟著班級資料走）。
+ * 沒有那一天＝還沒點名；有那一天但是空物件＝已點名、全部出席。
+ * 遲到算「有到」，不算缺席。保留最近 ATT_KEEP_DAYS 天（約一學期），新學年／完全重設會清空。
+ */
+const ATT = {
+  sick: { label: '病假', short: '病', icon: '🤒' },
+  personal: { label: '事假', short: '事', icon: '📝' },
+  official: { label: '公假', short: '公', icon: '🏅' },
+  truant: { label: '曠課', short: '曠', icon: '❗' },
+  late: { label: '遲到', short: '遲', icon: '⏰' }
+};
+const ATT_ORDER = ['sick', 'personal', 'official', 'truant', 'late'];
+const ATT_ABSENT = new Set(['sick', 'personal', 'official', 'truant']);
+const ATT_KEEP_DAYS = 200;
+function normalizeAttendance(a) {
+  const out = {};
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return out;
+  Object.keys(a).forEach(dk => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dk)) return;
+    const day = a[dk]; const d = {};
+    if (day && typeof day === 'object') Object.keys(day).forEach(seat => { if (ATT[day[seat]] && +seat >= 1) d[+seat] = day[seat]; });
+    out[dk] = d;
+  });
+  return out;
+}
+// 刪掉太舊的點名紀錄（預設留 200 天）
+function pruneAttendance(att, today = dateKey(), keepDays = ATT_KEEP_DAYS) {
+  const [y, m, d] = today.split('-').map(Number);
+  const cut = dateKey(new Date(y, m - 1, d - keepDays));
+  Object.keys(att || {}).forEach(k => { if (k < cut) delete att[k]; });
+  return att;
+}
+// 設定某一天某座號的狀態（'' 或 'present' ＝ 出席）
+function setAttendance(st, dk, seat, status) {
+  st.attendance ||= {};
+  const day = (st.attendance[dk] ||= {});
+  if (!status || status === 'present' || !ATT[status]) delete day[seat];
+  else day[seat] = status;
+  pruneAttendance(st.attendance, dateKey());
+  return day;
+}
+// 全部出席：清掉那一天的假別，並記錄「已點名」
+function markAllPresent(st, dk) { st.attendance ||= {}; st.attendance[dk] = {}; return st.attendance[dk]; }
+// 那一天的點名（只算還在名單上的座號，空號不算）
+function attendanceOf(st, dk, seats) {
+  const rec = st.attendance && st.attendance[dk];
+  const ok = new Set(seats);
+  const list = rec ? Object.keys(rec).map(Number).filter(n => ok.has(n)).sort((a, b) => a - b).map(n => ({ seat: n, status: rec[n] })) : [];
+  const absent = list.filter(x => ATT_ABSENT.has(x.status));
+  const late = list.filter(x => x.status === 'late');
+  return { taken: !!rec, list, absent, late, present: seats.length - absent.length };
+}
+// 某一天缺席的座號（抽號、每日任務會跳過）
+function absentSeats(st, dk, seats) { return attendanceOf(st, dk, seats).absent.map(x => x.seat); }
+// 「03 號（病假）」；names：顯示姓名
+function attWho(x, names, showNames) {
+  const nm = showNames && names ? String(names[x.seat] || '').trim() : '';
+  return `${pad(x.seat)} 號${nm ? ' ' + nm : ''}（${ATT[x.status].label}）`;
+}
+// 首頁卡片文字
+function attSummaryText(info, names, showNames) {
+  if (!info.taken) return '';
+  const parts = [];
+  if (info.absent.length) parts.push(`今日缺席 ${info.absent.length} 人：${info.absent.map(x => attWho(x, names, showNames)).join('、')}`);
+  if (info.late.length) parts.push(`遲到：${info.late.map(x => { const nm = showNames && names ? String(names[x.seat] || '').trim() : ''; return `${pad(x.seat)} 號${nm ? ' ' + nm : ''}`; }).join('、')}`);
+  return parts.length ? parts.join('　') : '今日全到 🎉';
+}
+// 跑馬燈片段（有缺席才出現）
+function buildAttAnnPart(info, names, showNames) {
+  if (!info.taken || !info.absent.length) return '';
+  return `🙋 今日缺席 ${info.absent.length} 人：${info.absent.map(x => attWho(x, names, showNames)).join('、')}`;
+}
+
 /* ---------------- 作業檢查（資料層） ---------------- */
 const HW_CYCLE = { miss: 'fix', fix: 'done', done: 'miss' };
 const HW_LABEL = { miss: '沒交', fix: '要訂正', done: '完成' };
@@ -577,6 +685,9 @@ const activeSeats = () => {
   return Array.from({ length: Number(state.settings.maxSeat) || 0 }, (_, i) => i + 1).filter(n => !v.has(n));
 };
 const nameOf = n => state.settings.names[n] || '';
+// 點名：今天（或指定日期）有到的座號＝名單座號扣掉請假／曠課（遲到算有到）
+const presentSeats = (dk = dateKey()) => { const seats = activeSeats(); const ab = new Set(absentSeats(state, dk, seats)); return seats.filter(n => !ab.has(n)); };
+const todayAttendance = () => attendanceOf(state, dateKey(), activeSeats());
 const stu = n => (state.students[n] ||= { coins: 0, nextAt: 10, species: [] });
 const todayDone = () => (state.done[dateKey()] ||= {});
 const classSpecies = () => {
@@ -691,7 +802,7 @@ document.addEventListener('click', e => {
 });
 // 新學年：每一班的學生資料都清空，班級清單、週課表與班級標記保留
 function newYearReset() {
-  const clear = () => ({ students: {}, done: {}, contact: {}, homework: [], log: [], forest: { level: 1, points: 0 } });
+  const clear = () => ({ students: {}, done: {}, contact: {}, homework: [], log: [], attendance: {}, forest: { level: 1, points: 0 } });
   Object.assign(state, clear(), { ttOverrides: {} });
   Object.assign(state.settings, { names: {}, vacant: [], schoolYear: '', semester: '' });
   classList().forEach(c => {
@@ -796,13 +907,107 @@ function bindTabs(group, onChange) {
   });
 }
 
+/* ---------------- 點名（畫面） ----------------
+ * 首頁班級名稱下方的「點名」卡片：誰都看得到（走進教室的科任老師也看得到）；
+ * 點進去標記假別要教師登入（跟調課、教師控制台一樣），避免學生亂改。
+ */
+function renderAttChip(info = todayAttendance()) {
+  const el = $('#attChip'); if (!el) return;
+  if (!state.settings.setupDone) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const txt = attSummaryText(info, state.settings.names, !!state.settings.attNames);
+  el.className = 'att-chip ' + (!info.taken ? 'att-none' : info.absent.length || info.late.length ? 'att-has' : 'att-all');
+  el.textContent = info.taken ? '🙋 ' + txt : '🙋 點名';
+  el.title = info.taken ? '今日點名（老師點這裡修改）' : '今天還沒點名（老師點這裡點名）';
+}
+let attBrush = 'sick';
+function attDateLabel(dk) { return hwDateLabel(dk); }
+function openAttendance(dk) {
+  if (!state.settings.setupDone) return openSetup();
+  if (!isAuthed()) { _afterUnlock = () => openAttendance(dk); return teacherOpen('unlock'); }
+  dk = dk || dateKey();
+  const cc = isMulti() ? curClassObj() : null;
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>🙋 點名${cc ? ` <small class="cls-subj">${esc(classLabel(cc))}</small>` : ''}</h2>
+    <p class="sub">先在上方選假別，再點座號；再點一次就改回出席。沒有標記的同學都算出席。改了會馬上儲存。${isMulti() ? '<br>每一班的點名分開記錄，要點別班請先「⇄ 換班級」。' : ''}</p>
+    <div class="att-top">
+      <label class="att-date">日期 <input type="date" id="attDate" value="${esc(dk)}"></label>
+      <button type="button" class="btn" id="attToday">今天</button>
+      <span class="att-sum" id="attSum"></span>
+    </div>
+    <div class="att-pick" id="attPick">${ATT_ORDER.map(k => `<button type="button" class="att-pk att-${k}${k === attBrush ? ' active' : ''}" data-brush="${k}">${ATT[k].icon} ${ATT[k].label}</button>`).join('')}</div>
+    <div class="seat-grid att-grid" id="attGrid"></div>
+    <div class="btn-row" style="justify-content:flex-start;margin:12px 0 4px">
+      <button type="button" class="btn" id="attAllPresent">👌 全部出席</button>
+    </div>
+    <h4 style="margin:18px 0 6px">顯示設定</h4>
+    <label class="chk att-opt"><input type="checkbox" id="attAnn"${state.settings.attAnnounce !== false ? ' checked' : ''}> 跑馬燈公告自動加上「今日缺席」</label>
+    <label class="chk att-opt"><input type="checkbox" id="attNm"${state.settings.attNames ? ' checked' : ''}> 首頁和跑馬燈也顯示學生姓名（畫面是公開的，不勾選只會顯示座號）</label>
+    <h4 style="margin:18px 0 6px">最近的點名紀錄</h4>
+    <div class="att-hist" id="attHist"></div>
+    <div class="modal-actions"><button type="button" class="primary" id="attDone">✅ 完成點名</button></div>`, { wide: true });
+  const draw = () => {
+    const seats = activeSeats();
+    const day = state.attendance[dk] || {};
+    const info = attendanceOf(state, dk, seats);
+    $('#attGrid').innerHTML = seats.map(n => {
+      const st = day[n];
+      return `<button type="button" class="seat att-seat${st ? ' att-' + st : ''}${st && ATT_ABSENT.has(st) ? ' absent' : ''}" data-att-seat="${n}"><b>${pad(n)}</b><small>${esc(nameOf(n)) || '&nbsp;'}</small><i class="att-tag${st ? ' att-' + st : ''}">${st ? ATT[st].label : '出席'}</i></button>`;
+    }).join('') || '<p class="hint">還沒有學生座號，請先到「教師控制台 → 座號與名單」設定。</p>';
+    const cnt = ATT_ORDER.map(k => [k, info.list.filter(x => x.status === k).length]).filter(x => x[1]);
+    $('#attSum').textContent = `${attDateLabel(dk)}${info.taken ? '' : '（還沒點名）'}　出席 ${info.present}／${seats.length} 人${cnt.length ? '　' + cnt.map(([k, c]) => `${ATT[k].label} ${c}`).join('・') : ''}`;
+    const keys = Object.keys(state.attendance || {}).sort().reverse().slice(0, 10);
+    $('#attHist').innerHTML = keys.length ? keys.map(k => {
+      const i = attendanceOf(state, k, seats);
+      const t = i.list.length ? i.list.map(x => `${pad(x.seat)} ${ATT[x.status].short}`).join('、') : '全到';
+      return `<button type="button" class="att-h${k === dk ? ' active' : ''}" data-att-day="${k}"><b>${attDateLabel(k)}</b><span>${i.absent.length ? `缺 ${i.absent.length}：` : ''}${esc(t)}</span></button>`;
+    }).join('') : '<p class="hint" style="margin:0">還沒有點名紀錄。</p>';
+  };
+  const changed = () => { save(); renderHeader(); renderTaskWidget(); if ($('.page.active')?.dataset.page === 'tasks') renderTasksPage(); draw(); };
+  draw();
+  $('#attPick').onclick = e => {
+    const b = e.target.closest('[data-brush]'); if (!b) return;
+    attBrush = b.dataset.brush;
+    $$('#attPick [data-brush]').forEach(x => x.classList.toggle('active', x === b));
+  };
+  $('#attGrid').onclick = e => {
+    const b = e.target.closest('[data-att-seat]'); if (!b) return;
+    const n = +b.dataset.attSeat;
+    const cur = (state.attendance[dk] || {})[n];
+    setAttendance(state, dk, n, cur === attBrush ? '' : attBrush);
+    changed();
+    const nb = $(`#attGrid [data-att-seat="${n}"]`); nb && nb.classList.add('pop');
+  };
+  $('#attAllPresent').onclick = () => { markAllPresent(state, dk); changed(); toast(`✅ ${attDateLabel(dk)} 全部出席`); };
+  $('#attDate').onchange = () => { const v = $('#attDate').value; if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { dk = v; draw(); } };
+  $('#attToday').onclick = () => { dk = dateKey(); $('#attDate').value = dk; draw(); };
+  $('#attHist').onclick = e => { const b = e.target.closest('[data-att-day]'); if (!b) return; dk = b.dataset.attDay; $('#attDate').value = dk; draw(); };
+  $('#attAnn').onchange = () => { state.settings.attAnnounce = $('#attAnn').checked; save(); renderHeader(); };
+  $('#attNm').onchange = () => { state.settings.attNames = $('#attNm').checked; save(); renderHeader(); };
+  $('#attDone').onclick = () => {
+    if (!state.attendance[dk]) markAllPresent(state, dk); // 沒標任何人就按完成＝全部出席
+    save(); renderAll(); closeModal();
+    const i = attendanceOf(state, dk, activeSeats());
+    toast(`✅ ${attDateLabel(dk)} 點名完成：${i.absent.length ? `缺席 ${i.absent.length} 人` : '全部出席'}${i.late.length ? `、遲到 ${i.late.length} 人` : ''}`, 3000);
+  };
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('#attChip, #attNavBtn')) openAttendance();
+});
+
 /* ---------------- 頂部 ---------------- */
 // 組成跑馬燈片段：老師公告 + 每日任務自動則 + 作業未繳／待訂正（不寫入 settings.announcement）
-// 歡迎詞裡出現校名、但後面沒接班級時，自動補上班級（例：嘉蘭國民小學 → 嘉蘭國民小學六年甲班）
+// 歡迎詞裡出現校名、但後面沒接班級時，自動補上班級（例：嘉蘭國民小學 → 嘉蘭國民小學一年甲班）
+// 不重複：公告裡已經有目前的班級名稱就不再補；校名後面已經接著別的班名（老師自己寫的）也不再補
+const CLASS_LIKE = /^\s*(?:[一二三四五六七八九十\d]{1,2}\s*年\s*[^\s，,。！!、]{1,3}?\s*班|[一二三四五六七八九十][甲乙丙丁戊己庚辛壬癸忠孝仁愛信義和平]|\d{3}\s*班)/;
 function withClassName(text, school, className) {
-  if (!text || !school || !className) return text || '';
+  text = String(text || '');
+  className = String(className || '').trim();
+  school = String(school || '').trim();
+  if (!text || !school || !className) return text;
+  if (text.includes(className)) return text;
   const segs = text.split(school);
-  return segs.reduce((acc, seg, i) => i === 0 ? seg : acc + school + (seg.trimStart().startsWith(className) ? '' : className) + seg, '');
+  return segs.reduce((acc, seg, i) => i === 0 ? seg : acc + school + (CLASS_LIKE.test(seg) ? '' : className) + seg, '');
 }
 // 倒數日 → 跑馬燈：取最近 3 個還沒過的事件
 function buildCountdownParts(countdowns, max = 3) {
@@ -811,15 +1016,17 @@ function buildCountdownParts(countdowns, max = 3) {
     .sort((a, b) => a.d - b.d).slice(0, max)
     .map(({ c, d }) => d === 0 ? `⏳ 今天就是${c.name}！` : `⏳ 距離${c.name}還有 ${d} 天`);
 }
-function buildAnnParts(announcement, taskDefs, seats, doneRec, homework, countdowns) {
+// taskSeats：每日任務只算今天有到的人（請假的同學不會被列在「尚未…」）；attPart：點名的今日缺席
+function buildAnnParts(announcement, taskDefs, seats, doneRec, homework, countdowns, taskSeats = seats, attPart = '') {
   const ann = (announcement || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  if (attPart) ann.push(attPart);
   ann.push(...buildCountdownParts(countdowns));
   const auto = [];
-  if (seats.length) {
+  if (taskSeats.length) {
     (taskDefs || []).forEach(t => {
       if (!t.announce) return;
       const done = new Set(doneRec[t.id] || []);
-      const miss = seats.filter(n => !done.has(n));
+      const miss = taskSeats.filter(n => !done.has(n));
       if (!miss.length) return;
       // 公告用語：「尚未」+ 任務名稱，名稱結尾的「完成」去掉（訂正完成 → 尚未訂正）
       const label = t.name.replace(/完成$/, '').trim() || t.name;
@@ -869,7 +1076,10 @@ function renderHeader() {
   document.title = `${cc ? classLabel({ name: s.className, subject: cc.subject }) : s.className}｜班級儀表板`;
   renderClassSwitch();
   const seats = activeSeats();
-  const parts = buildAnnParts(withClassName(s.announcement, s.school, s.className), state.taskDefs, seats, todayDone(), state.homework, state.countdowns);
+  const att = todayAttendance();
+  const attPart = s.attAnnounce !== false ? buildAttAnnPart(att, s.names, !!s.attNames) : '';
+  const parts = buildAnnParts(withClassName(s.announcement, s.school, s.className), state.taskDefs, seats, todayDone(), state.homework, state.countdowns, presentSeats(), attPart);
+  renderAttChip(att);
   const text = parts.length ? parts.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
   const annEl = $('#annText');
   // 文字沒變就別重畫，避免跑馬燈動畫每秒重來
@@ -878,7 +1088,7 @@ function renderHeader() {
     if (parts.length) {
       // 依公告類型上高亮色：老師公告＝螢光黃、未繳＝亮粉紅、待訂正＝亮橘、每日任務未完成＝亮青
       annEl.innerHTML = parts.map(p => {
-        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : p.startsWith('⏳') ? 'ann-cd' : 'ann-note';
+        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : p.startsWith('⏳') ? 'ann-cd' : p.startsWith('🙋') ? 'ann-att' : 'ann-note';
         return `<b class="${c}">${esc(p)}</b>`;
       }).join('<i class="ann-sep">　　★　　</i>');
     } else annEl.textContent = text;
@@ -915,7 +1125,7 @@ function termFields(s, prefix) {
     </div>`;
 }
 function todayRate(key = dateKey()) {
-  const seats = activeSeats(), rec = state.done[key];
+  const seats = presentSeats(key), rec = state.done[key];
   if (!rec || !seats.length || !state.taskDefs.length) return 0;
   const set = new Set(seats);
   let n = 0;
@@ -2082,7 +2292,7 @@ function renderTaskWidget() {
   if (!validHw && !validDaily) state.ui.widgetTask = open[0] ? 'hw:' + open[0].id : (state.taskDefs[0]?.id || '');
   const id = state.ui.widgetTask;
   $('#taskSelect').innerHTML = taskOptions(id);
-  const seats = activeSeats();
+  let seats = activeSeats();
   let n = 0, missHtml = '';
   if (id && id.startsWith('hw:')) {
     const h = state.homework.find(x => x.id === id.slice(3));
@@ -2094,10 +2304,14 @@ function renderTaskWidget() {
         : '🎉 全班都完成了！';
     }
   } else {
+    // 每日任務只算今天有到的人；請假／曠課的同學不算「尚未完成」
+    const all = seats.length;
+    seats = presentSeats();
     const done = new Set(todayDone()[id] || []);
     n = seats.filter(s => done.has(s)).length;
     const miss = seats.filter(s => !done.has(s));
-    missHtml = !seats.length ? '' : miss.length ? `尚未完成：<b>${miss.map(s => pad(s)).join('、')}</b>` : '🎉 全班都完成了！';
+    const off = all - seats.length;
+    missHtml = !seats.length ? '' : (miss.length ? `尚未完成：<b>${miss.map(s => pad(s)).join('、')}</b>` : '🎉 全班都完成了！') + (off ? `<small class="att-off">（今日缺席 ${off} 人不列入）</small>` : '');
   }
   $('#taskDone').textContent = n; $('#taskTotal').textContent = seats.length;
   $('#taskRing').style.strokeDashoffset = 314.16 * (1 - (seats.length ? n / seats.length : 0));
@@ -2121,7 +2335,8 @@ function renderTasksPage() {
 }
 function renderDailyTaskPanel() {
   if (!state.taskDefs.find(t => t.id === state.ui.pageTask)) state.ui.pageTask = state.taskDefs[0]?.id;
-  const rec = todayDone(), seats = activeSeats();
+  const rec = todayDone(), all = activeSeats(), seats = presentSeats();
+  const absMap = {}; todayAttendance().list.forEach(x => { absMap[x.seat] = x.status; });
   $('#taskTabs').innerHTML = state.taskDefs.map(t => {
     const c = (rec[t.id] || []).filter(s => seats.includes(s)).length;
     return `<button data-id="${t.id}" class="${t.id === state.ui.pageTask ? 'active' : ''}">${esc(t.name)}<em>${c}/${seats.length}</em></button>`;
@@ -2134,7 +2349,11 @@ function renderDailyTaskPanel() {
     allBtn.disabled = !left;
     allBtn.textContent = left ? `✅ 全班完成（補 ${left} 人）` : '🎉 全班已完成';
   }
-  $('#seatGrid').innerHTML = seats.map(s => `<button class="seat ${done.has(s) ? 'done' : ''}" data-seat="${s}"><b>${pad(s)}</b><small>${esc(nameOf(s)) || '&nbsp;'}</small></button>`).join('');
+  // 請假／曠課的座號照樣顯示（變淡、標上假別），老師還是可以幫他打卡
+  $('#seatGrid').innerHTML = all.map(s => {
+    const a = absMap[s], off = a && ATT_ABSENT.has(a);
+    return `<button class="seat ${done.has(s) ? 'done' : ''}${off ? ' absent' : ''}" data-seat="${s}"${a ? ` title="今日${ATT[a].label}"` : ''}><b>${pad(s)}</b><small>${esc(nameOf(s)) || '&nbsp;'}</small>${a ? `<i class="att-tag att-${a}">${ATT[a].label}</i>` : ''}</button>`;
+  }).join('');
 }
 function renderHomeworkPanel() {
   const seats = activeSeats();
@@ -2239,7 +2458,7 @@ document.addEventListener('click', e => {
   if (e.target.closest('#taskAllDone')) {
     const tid = state.ui.pageTask; if (!tid) return;
     const t = state.taskDefs.find(x => x.id === tid);
-    const seats = activeSeats();
+    const seats = presentSeats(); // 今天請假／曠課的同學不用補打卡
     const rec = todayDone();
     const left = seats.filter(s => !(rec[tid] || []).includes(s));
     if (!left.length) return;
@@ -2483,8 +2702,9 @@ function confetti() {
 let drawn = [];
 $('#drawBtn').onclick = () => {
   const noRep = $('#drawNoRepeat').checked;
-  let pool = activeSeats().filter(s => !noRep || !drawn.includes(s));
-  if (!pool.length) { toast('全部都抽過了，按「重置」重新開始'); return; }
+  // 今天請假／曠課的同學不會被抽到
+  let pool = presentSeats().filter(s => !noRep || !drawn.includes(s));
+  if (!pool.length) { toast(presentSeats().length ? '全部都抽過了，按「重置」重新開始' : '今天沒有可以抽的同學'); return; }
   ensureAudio();
   const el = $('#drawNum'); el.classList.add('rolling');
   let k = 0;
@@ -2783,10 +3003,12 @@ function openSetup(role) {
     if (!(max >= 1 && max <= 60)) return $('#sErr').textContent = '最大座號請填 1～60';
     if (pw.length < 4) return $('#sErr').textContent = '密碼至少 4 碼';
     if (pw !== $('#sPw2').value) return $('#sErr').textContent = '兩次密碼不一樣';
+    const oldSchool = s.school, oldClass = s.className;
     Object.assign(s, {
       school: $('#sSchool').value.trim(), className: $('#sClass').value.trim(), schoolYear: $('#sYear').value.trim(), semester: $('#sSem').value,
       maxSeat: max, vacant: parseVacant($('#sVac').value).filter(n => n <= max), pwHash: await hashPw(pw), setupDone: true, mode: 'single'
     });
+    refreshDefaultAnnouncement(s, oldSchool, oldClass);
     setAuth();
     save(); closeModal(); renderAll(); toast('✅ 設定完成！');
   };
@@ -2835,6 +3057,9 @@ function openSetupMulti() {
     const pwHash = await hashPw(pw);
     setupMultiClasses(list.map(r => ({ name: r.name.trim(), subject: r.subject.trim(), maxSeat: +r.max, vacant: parseVacant(r.vac).filter(n => n <= +r.max) })));
     Object.assign(s, { school: $('#sSchool').value.trim(), schoolYear: $('#sYear').value.trim(), semester: $('#sSem').value, pwHash, setupDone: true });
+    // 每一班都用「歡迎蒞臨＋校名」，畫面上會自動接上各班自己的班名
+    s.announcement = defaultAnnouncement(s.school);
+    classList().forEach(c => { if (c.data && c.data.settings && !String(c.data.settings.announcement || '').trim()) c.data.settings.announcement = defaultAnnouncement(s.school); });
     setAuth();
     save(); closeModal(); renderAll();
     toast(`✅ 設定完成！共 ${list.length} 個班級。到「教師控制台 → 週課表」標記每一節是哪一班，上課時就會自動換班。`, 6000);
@@ -2932,7 +3157,9 @@ function ctBasic(el) {
     <div class="modal-actions"><button class="primary" id="bSave">儲存</button></div>`;
   $('#bSrc').onchange = e => { $('#bCwa').classList.toggle('hidden', e.target.value !== 'cwa'); $('#bOm').classList.toggle('hidden', e.target.value === 'cwa'); };
   $('#bSave').onclick = async () => {
+    const oldSchool = s.school, oldClass = s.className, oldAnn = String(s.announcement || '').trim(), annTyped = $('#bAnn').value.trim();
     Object.assign(s, { school: $('#bSchool').value.trim(), className: $('#bClass').value.trim() || s.className, schoolYear: $('#bYear').value.trim(), semester: $('#bSem').value, announcement: $('#bAnn').value.trim(), studentEdit: $('#bStuEdit').checked });
+    if (annTyped === oldAnn) refreshDefaultAnnouncement(s, oldSchool, oldClass); // 公告沒動、只改校名 → 預設歡迎詞跟著換校名
     s.loc = { ...L, name: $('#bLoc').value.trim(), lat: +$('#bLat').value || 22.6, lon: +$('#bLon').value || 120.96,
       source: $('#bSrc').value, cwaKey: $('#bKey').value.trim(), cwaDataset: $('#bDs').value.trim() || 'F-D0047-037', cwaTown: $('#bTown').value.trim() || '金峰鄉' };
     save(); renderAll(); toast('✅ 基本資料已儲存');
@@ -3283,7 +3510,7 @@ function ctPoints(el) {
   });
 }
 
-const DEFAULT_BACKUP = { auto: false, freq: 'daily', weekdays: [5], time: '15:00', lastAt: '', lastName: '', lastError: '', folderName: '' };
+const DEFAULT_BACKUP = { auto: false, freq: 'daily', weekdays: [5], time: '15:00', lastAt: '', lastName: '', lastError: '', folderName: '', target: '' }; // target：'folder' 資料夾／'browser' 瀏覽器裡（空白＝能選資料夾就用資料夾）
 function backupCfg() { return { ...DEFAULT_BACKUP, ...(state.backup || {}) }; }
 function backupDays(cfg) {
   if ((cfg.freq || 'daily') === 'weekly') {
@@ -3410,27 +3637,189 @@ function idbDelPrefix(prefix) {
   });
 }
 
+// 列出某個開頭的所有 key（瀏覽器內備份清單）
+function idbList(prefix) {
+  return new Promise(resolve => {
+    try {
+      if (!window.indexedDB) return resolve([]);
+      const req = indexedDB.open(IDB_BACKUP, 1);
+      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('kv')) req.result.createObjectStore('kv'); };
+      req.onerror = () => resolve([]);
+      req.onsuccess = () => {
+        const db = req.result, out = [];
+        const tx = db.transaction('kv', 'readonly');
+        const cur = tx.objectStore('kv').openCursor();
+        cur.onsuccess = () => {
+          const c = cur.result; if (!c) return;
+          if (String(c.key).startsWith(prefix)) out.push({ key: String(c.key), value: c.value });
+          c.continue();
+        };
+        tx.oncomplete = () => { db.close(); resolve(out); };
+        tx.onerror = () => { db.close(); resolve(out); };
+      };
+    } catch (e) { resolve([]); }
+  });
+}
+
+/* ---------------- 備份：瀏覽器內備份（不能選資料夾時的自動備份） ----------------
+ * 嵌在 Google 協作平台等網頁裡（iframe）時，瀏覽器不讓網頁選資料夾，也開不了新分頁；
+ * 而且嵌入框裡的資料和獨立分頁的資料本來就是分開存的，開新分頁去備份會備份到「另一份」資料。
+ * 所以這時自動備份改存在「這個瀏覽器裡」（IndexedDB），保留最近 SNAP_KEEP 份，可以下載或還原。
+ * 這種備份可以救回改錯、刪錯的資料，但清除瀏覽器資料、換電腦時會一起不見，仍要偶爾手動備份。
+ */
+const SNAP_PREFIX = 'snap:';
+const SNAP_KEEP = 14;
+function folderUsable() { return canPickFolder() && !inIframe(); }
+// 實際的自動備份位置：能選資料夾、而且老師沒選「瀏覽器裡」→ 資料夾；其餘 → 瀏覽器裡
+function backupTarget(cfg = backupCfg()) { return folderUsable() && cfg.target !== 'browser' ? 'folder' : 'browser'; }
+async function saveSnapshot(tag = '自動備份', now = new Date()) {
+  if (!window.indexedDB) { const e = new Error('這個瀏覽器不能存備份'); e.code = 'noidb'; throw e; }
+  const data = backupPayload();
+  const at = now.toISOString();
+  await idbSet(SNAP_PREFIX + at, { at, tag, name: backupFileName(tag), size: data.length, classes: classList().length, data });
+  await pruneSnapshots();
+  return { key: SNAP_PREFIX + at, at, tag };
+}
+async function listSnapshots() {
+  const all = await idbList(SNAP_PREFIX);
+  return all.filter(x => x.value && typeof x.value.data === 'string')
+    .map(x => ({ key: x.key, at: x.value.at, tag: x.value.tag, name: x.value.name, size: x.value.size, classes: x.value.classes }))
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+async function pruneSnapshots(keep = SNAP_KEEP) {
+  const list = await listSnapshots();
+  for (const s of list.slice(keep)) await idbDel(s.key);
+  return Math.max(0, list.length - keep);
+}
+async function getSnapshot(key) { const v = await idbGet(key); return v && typeof v.data === 'string' ? v : null; }
+function fmtSize(n) { n = Number(n) || 0; return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+
+/* ---------------- 備份：下載、複製、貼上 ---------------- */
+// 一般下載（嵌入框沒有允許下載時，瀏覽器可能會默默擋掉，所以嵌入時會另外顯示「複製備份內容」）
+function downloadText(text, name) {
+  try {
+    const blob = new Blob([text], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 4000);
+    return true;
+  } catch (e) { console.warn(e); return false; }
+}
+async function copyText(text, ta) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch (_) { /* 嵌入框常常沒有剪貼簿權限，改用下面的方法 */ }
+  try {
+    if (ta) {
+      ta.removeAttribute('readonly'); ta.focus(); ta.select(); ta.setSelectionRange(0, ta.value.length);
+      const ok = typeof document.execCommand === 'function' && document.execCommand('copy');
+      ta.setAttribute('readonly', '');
+      if (ok) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+// 顯示備份內容（可以複製後貼到記事本存檔）。tried：剛剛已經試著下載
+function showBackupText(text, name, { tried = false, back = true } = {}) {
+  const lead = tried
+    ? `已經試著下載「<b>${esc(name)}</b>」。請看看電腦的「下載」資料夾有沒有這個檔案。<br>如果沒有（儀表板嵌在 Google 協作平台等網頁裡時，下載有可能被擋），請改用下面的方法，一樣可以備份：`
+    : '把備份內容複製起來，存成一個檔案就完成備份：';
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>📦 備份內容</h2>
+    <p class="sub">${lead}</p>
+    <ol class="bk-steps">
+      <li>按下面的「<b>📋 複製備份內容</b>」。</li>
+      <li>打開「記事本」（Windows）或「文字編輯」（Mac），按 <b>Ctrl＋V</b>（Mac 是 ⌘＋V）貼上。</li>
+      <li>存檔，檔名可以取「${esc(name)}」。存到隨身碟或雲端硬碟更安全。</li>
+      <li>要還原時：教師控制台 → 資料管理 →「⬆️ 還原備份檔」選這個檔，或按「📋 貼上備份內容還原」把內容貼回來。</li>
+    </ol>
+    <textarea id="bkText" class="bk-text" readonly spellcheck="false"></textarea>
+    <div class="modal-actions" style="justify-content:space-between">
+      ${back ? '<button type="button" class="btn" id="bkTextBack">← 回到資料管理</button>' : '<span></span>'}
+      <button type="button" class="primary" id="bkCopy">📋 複製備份內容</button>
+    </div>`, { wide: true });
+  const ta = $('#bkText');
+  ta.value = text;
+  $('#bkCopy').onclick = async () => {
+    if (await copyText(text, ta)) toast('✅ 已複製備份內容，請貼到記事本並存檔', 3500);
+    else { ta.focus(); ta.select(); toast('沒辦法自動複製，請在框框裡按 Ctrl＋A 全選，再按 Ctrl＋C 複製', 5000); }
+  };
+  const b = $('#bkTextBack'); if (b) b.onclick = () => openConsole('data');
+}
+// 手動備份：先試一般下載；嵌在別的網頁裡時，同時顯示「複製備份內容」的方法
+function exportData(tag = '手動備份', { quiet = false } = {}) {
+  const name = backupFileName(tag), text = backupPayload();
+  const ok = downloadText(text, name);
+  if (!quiet && (!ok || inIframe())) { showBackupText(text, name, { tried: ok }); return ok; }
+  if (ok) toast('✅ 已下載「' + name + '」');
+  return ok;
+}
+// 還原：把讀進來的備份換成目前資料
+async function applyRestored(next) {
+  try { await saveSnapshot('還原前自動保留'); } catch (_) {} // 還原前先在瀏覽器留一份，按錯還救得回來
+  state = next;
+  drawnBy = {}; drawn = []; weekDraft = null; autoKey = null; refreshDrawUI();
+  setAuth();
+  stopMusic(); musicMissing.clear();
+  save(); renderAll(); renderMusic(); loadWeather();
+  const nFile = state.music.tracks.filter(t => t.kind === 'file').length;
+  if (nFile) {
+    toast(`✅ 已還原備份。備份只含音樂清單，不含音檔本身；有 ${nFile} 首本機音樂若顯示「請重新指定」，請重新選擇檔案`, 6000);
+    refreshMusicAvail();
+  } else toast('✅ 已還原備份');
+  openConsole('data');
+}
+// 從文字（檔案內容、貼上的內容、瀏覽器內備份）還原；label：給老師看的來源名稱
+function parseBackupText(text) {
+  const t = String(text || '').trim().replace(/^\uFEFF/, '');
+  return importBackupData(JSON.parse(t));
+}
+function restoreFromText(text, label) {
+  let next;
+  try { next = parseBackupText(text); } catch (err) { toast('❌ 這不是正確的備份內容'); return Promise.resolve(false); }
+  const n = next.classes.length;
+  return askConfirm(`要用${label}取代目前全部資料嗎？${isMulti() ? '\n（目前所有班級都會被取代）' : ''}${n > 1 ? `\n備份檔裡有 ${n} 個班級。` : ''}\n（還原前會先在這個瀏覽器自動保留一份目前的資料）`, '還原').then(async ok => {
+    if (!ok) return false;
+    await applyRestored(next);
+    return true;
+  });
+}
+function openPasteRestore() {
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>📋 貼上備份內容還原</h2>
+    <p class="sub">把之前存下來的備份內容貼到下面（一大段以「{」開頭的文字），再按「還原」。<br>用記事本打開備份檔，按 Ctrl＋A 全選、Ctrl＋C 複製，就能拿到備份內容。</p>
+    <textarea id="bkPaste" class="bk-text" spellcheck="false" placeholder='{"settings": …'></textarea>
+    <div class="modal-actions" style="justify-content:space-between">
+      <button type="button" class="btn" id="bkPasteBack">← 回到資料管理</button>
+      <button type="button" class="primary" id="bkPasteGo">還原</button>
+    </div>`, { wide: true });
+  $('#bkPasteBack').onclick = () => openConsole('data');
+  $('#bkPasteGo').onclick = () => {
+    const v = $('#bkPaste').value;
+    if (!v.trim()) return toast('請先貼上備份內容');
+    restoreFromText(v, '貼上的備份內容');
+  };
+}
+
+/* ---------------- 備份：資料夾（Chrome／Edge、獨立分頁） ---------------- */
 function canPickFolder() { return typeof window.showDirectoryPicker === 'function'; }
+let lastPickBlocked = false;
 async function pickBackupFolder() {
-  if (!canPickFolder()) {
-    toast('這個瀏覽器不能指定資料夾，請改用 Chrome 或 Edge');
-    return null;
-  }
+  lastPickBlocked = false;
+  if (!folderUsable()) { lastPickBlocked = true; return null; }
   try {
     const handle = await window.showDirectoryPicker({ id: 'jl-backup', mode: 'readwrite', startIn: 'documents' });
     const perm = await handle.requestPermission({ mode: 'readwrite' });
     if (perm !== 'granted') { toast('沒有寫入這個資料夾的權限'); return null; }
     await idbSet('backupDir', handle);
-    state.backup = { ...backupCfg(), folderName: handle.name };
+    state.backup = { ...backupCfg(), folderName: handle.name, target: 'folder' };
     save();
     return handle;
   } catch (e) {
     if (e && e.name === 'AbortError') return null;
-    if ((e && e.name === 'SecurityError') || inIframe()) {
-      showBackupBanner('embedded');
-      toast('目前是嵌在別的網頁裡，無法選擇資料夾。請用「開新分頁」打開儀表板再設定。');
-      return null;
-    }
+    if (e && (e.name === 'SecurityError' || e.name === 'NotAllowedError')) { lastPickBlocked = true; return null; }
     toast('無法選擇資料夾');
     return null;
   }
@@ -3476,18 +3865,14 @@ function showBackupBanner(kind) {
   }
   const msg = el.querySelector('.bb-msg');
   const go = el.querySelector('#backupBannerGo');
-  if (kind === 'embedded') {
-    msg.textContent = '自動備份要在獨立分頁才能指定資料夾。請先用新分頁打開儀表板。';
-    go.style.display = 'none';
-  } else if (kind === 'nofolder') {
+  if (kind === 'nofolder') {
     msg.textContent = '自動備份已開啟，但還沒指定資料夾。';
     go.textContent = '選擇資料夾並備份';
-    go.style.display = '';
   } else {
     msg.textContent = '今日的自動備份需要你按一下，授權寫入備份資料夾。';
     go.textContent = '授權並備份';
-    go.style.display = '';
   }
+  go.style.display = '';
   el.style.display = 'flex';
 }
 function markBackupOk(name) {
@@ -3501,7 +3886,15 @@ async function maybeAutoBackup(fromUser = false) {
   if (!cfg.auto || _backupBusy) return false;
   if (!fromUser && !isBackupDue(cfg)) return false;
   _backupBusy = true;
+  const target = backupTarget(cfg);
   try {
+    if (target === 'browser') {
+      await saveSnapshot('自動備份');
+      markBackupOk('瀏覽器內備份');
+      toast('✅ 已自動備份（存在這個瀏覽器裡）', 3000);
+      if ($('#bkSnaps')) renderSnapList();
+      return true;
+    }
     const handle = await idbGet('backupDir');
     if (!handle) { showBackupBanner('nofolder'); return false; }
     const perm = await handle.queryPermission({ mode: 'readwrite' });
@@ -3514,7 +3907,7 @@ async function maybeAutoBackup(fromUser = false) {
     if (e && e.code === 'permission') { showBackupBanner('permission'); return false; }
     state.backup = { ...cfg, lastError: String(e && e.message || e) };
     save();
-    if (fromUser) toast('❌ 寫入資料夾失敗，請重新選擇資料夾，或改用手動備份');
+    if (fromUser) toast(target === 'browser' ? '❌ 瀏覽器裡存不下備份，請改用手動備份' : '❌ 寫入資料夾失敗，請重新選擇資料夾，或改用手動備份');
     return false;
   } finally { _backupBusy = false; }
 }
@@ -3522,28 +3915,47 @@ async function maybeAutoBackup(fromUser = false) {
 function backupStatusText(cfg) {
   const last = cfg.lastAt ? fmtWhen(new Date(cfg.lastAt)) : '尚未備份';
   const next = cfg.auto ? fmtWhen(nextBackupAt(cfg)) : '（未啟用）';
-  const folder = cfg.folderName ? `資料夾「${cfg.folderName}」` : '還沒指定資料夾';
+  const folder = backupTarget(cfg) === 'browser' ? '存在這個瀏覽器裡' : cfg.folderName ? `資料夾「${cfg.folderName}」` : '還沒指定資料夾';
   const freq = (cfg.freq || 'daily') === 'weekly'
     ? `每週星期${(backupDays(cfg)).map(d => WEEK[d]).join('、')} ${cfg.time || '15:00'}`
     : `每日 ${cfg.time || '15:00'}`;
   return { last, next, folder, freq };
 }
+// 瀏覽器內備份清單
+async function renderSnapList() {
+  const box = $('#bkSnaps'); if (!box) return;
+  const list = await listSnapshots();
+  if (!$('#bkSnaps')) return;
+  box.innerHTML = list.length ? list.map(s => {
+    const d = new Date(s.at);
+    return `<div class="bk-snap"><span><b>${esc(fmtWhen(d))}</b>　${esc(s.tag || '')}${s.classes > 1 ? `・${s.classes} 班` : ''}・${fmtSize(s.size)}</span>
+      <span class="bk-snap-btns"><button type="button" class="btn" data-snap-dl="${esc(s.key)}">⬇️ 下載</button><button type="button" class="btn" data-snap-restore="${esc(s.key)}">還原</button></span></div>`;
+  }).join('') : '<p class="sub" style="margin:0">目前還沒有。開啟自動備份（存在瀏覽器裡），或按「💾 立刻存一份到瀏覽器」就會出現在這裡。</p>';
+}
 function ctData(el) {
   const cfg = backupCfg();
   const st = backupStatusText(cfg);
+  const tgt = backupTarget(cfg);
+  const canFolder = folderUsable();
   const wdBtns = [1, 2, 3, 4, 5, 6, 0].map(d =>
     `<button type="button" class="btn wd${(cfg.weekdays || []).includes(d) ? ' active' : ''}" data-wd="${d}">${WEEK[d]}</button>`
   ).join('');
   el.innerHTML = `
     <h4 style="margin:0 0 8px">手動備份</h4>
-    <p class="sub">立刻下載一份 JSON 備份檔到電腦（通常在「下載」資料夾）。換電腦、換瀏覽器或清除紀錄前，請先做一次。也可以隨時用來還原。「我的音樂」只會備份清單（曲名、網址），不含音檔本身。</p>
-    <div class="btn-row" style="justify-content:flex-start">
+    <p class="sub">把全部資料存成一個備份檔（通常在「下載」資料夾）。換電腦、換瀏覽器或清除紀錄前，請先做一次，也可以隨時用來還原。「我的音樂」只會備份清單（曲名、網址），不含音檔本身。<br>如果儀表板嵌在 Google 協作平台等網頁裡、檔案沒有下載下來，可以按「📋 複製備份內容」，貼到記事本存成檔案。</p>
+    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap">
       <button class="btn" id="dExport">⬇️ 手動備份（下載檔案）</button>
-      <label class="btn" style="cursor:pointer">⬆️ 還原備份檔<input type="file" id="dImport" accept=".json,application/json" hidden></label>
+      <button class="btn" id="dCopy">📋 複製備份內容</button>
+    </div>
+    <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px">
+      <label class="btn" style="cursor:pointer">⬆️ 還原備份檔<input type="file" id="dImport" accept=".json,.txt,application/json,text/plain" hidden></label>
+      <button class="btn" id="dPaste">📋 貼上備份內容還原</button>
     </div>
 
     <h4 style="margin:22px 0 8px">自動備份</h4>
-    <p class="sub">啟用後，到了指定時間會把備份寫進你選的資料夾。網頁要開著才會當場寫入；如果那時沒開，下次打開儀表板時會補做一次。請使用 Chrome 或 Edge。瀏覽器只會記住資料夾本身，不會顯示完整路徑（例如 C:\…），這是瀏覽器的安全限制。</p>
+    <p class="sub">${canFolder
+      ? '啟用後，到了指定時間會自動備份：可以存到電腦裡的資料夾（Chrome、Edge），也可以直接存在這個瀏覽器裡（不用選資料夾）。網頁要開著才會當場備份；如果那時沒開，下次打開儀表板時會補做一次。瀏覽器只會記住資料夾本身，不會顯示完整路徑（例如 C:\\…），這是瀏覽器的安全限制。'
+      : `${inIframe() ? '儀表板現在嵌在別的網頁裡（例如 Google 協作平台），' : '這個瀏覽器'}不能選電腦裡的資料夾，所以自動備份會<b>存在這個瀏覽器裡</b>，不用選資料夾，也不用開新分頁。網頁要開著才會當場備份；如果那時沒開，下次打開儀表板時會補做一次。`}</p>
     <label class="ann-chk" style="margin:8px 0 12px;display:inline-flex"><input type="checkbox" id="bkAuto"${cfg.auto ? ' checked' : ''}>啟用自動備份</label>
     <div id="bkOpts" class="bk-opts" style="display:${cfg.auto ? '' : 'none'}">
       <div class="field"><span>備份頻率</span>
@@ -3557,15 +3969,24 @@ function ctData(el) {
       </div>
       <div class="field"><span>備份時間（沒指定就用下午 3:00）</span>
         <input type="time" id="bkTime" value="${esc(cfg.time || '15:00')}"></div>
-      <div class="field"><span>備份資料夾</span>
+      ${canFolder ? `<div class="field"><span>備份存放位置</span>
+        <div class="btn-row" style="justify-content:flex-start;flex-wrap:wrap">
+          <button type="button" class="btn${tgt === 'folder' ? ' active' : ''}" id="bkTgtFolder">📁 電腦裡的資料夾</button>
+          <button type="button" class="btn${tgt === 'browser' ? ' active' : ''}" id="bkTgtBrowser">🗂️ 這個瀏覽器裡</button>
+        </div></div>` : ''}
+      ${tgt === 'folder' ? `<div class="field"><span>備份資料夾</span>
         <div class="btn-row" style="justify-content:flex-start;align-items:center;flex-wrap:wrap">
           <button type="button" class="btn" id="bkPick">📁 ${cfg.folderName ? '更改資料夾' : '選擇資料夾'}</button>
           <span class="sub" id="bkFolder" style="margin:0">${esc(st.folder)}</span>
         </div>
-      </div>
-      <p class="sub" id="bkStatus">上次備份：${esc(st.last)}　下次：${esc(st.next)}　${esc(st.freq)}</p>
-      <button type="button" class="btn" id="bkNow">⬇️ 立刻備份到這個資料夾</button>
+      </div>` : ''}
+      <p class="sub" id="bkStatus">上次備份：${esc(st.last)}　下次：${esc(st.next)}　${esc(st.freq)}${tgt === 'browser' ? '　（存在這個瀏覽器裡）' : ''}</p>
+      <button type="button" class="btn" id="bkNow">${tgt === 'folder' ? '⬇️ 立刻備份到這個資料夾' : '💾 立刻存一份到瀏覽器'}</button>
     </div>
+
+    <h4 style="margin:22px 0 8px">🗂️ 存在這個瀏覽器裡的備份（最近 ${SNAP_KEEP} 份）</h4>
+    <p class="sub bk-warn">這些備份存在<b>這台電腦的這個瀏覽器</b>裡，可以救回改錯、刪錯的資料。但是<b>清除瀏覽器資料、換電腦或換瀏覽器時，會一起不見</b>，所以還是要偶爾按上面的「⬇️ 手動備份」或「📋 複製備份內容」，把檔案存到隨身碟或雲端硬碟。</p>
+    <div id="bkSnaps" class="bk-snaps"><p class="sub" style="margin:0">讀取中…</p></div>
 
     <h4 style="margin:22px 0 8px">變更密碼</h4>
     <div class="row3">
@@ -3575,10 +3996,10 @@ function ctData(el) {
     </div>
     <div class="danger-zone">
       <h4>🎓 新學年／換班級</h4>
-      ${isMulti() ? `<p class="sub">會先自動下載一份備份（含所有班級），然後清空<b>每一班</b>的：學生金幣與物種、任務打卡紀錄、聯絡簿、作業、加扣分紀錄、班級山林等級、學生名單。<br>保留：班級清單（班名、科目）、學校名稱、作息表、週課表與班級標記、每日任務、倒數日、我的音樂、密碼。接著可到「班級管理」改班名、刪除或新增班級。</p>` : `<p class="sub">會先自動下載一份備份，然後清空：學生金幣與物種、任務打卡紀錄、聯絡簿、加扣分紀錄、班級山林等級、學生名單。<br>保留：學校名稱、作息表、每日任務、倒數日、我的音樂、密碼。接著會帶你設定新班級。</p>`}
+      ${isMulti() ? `<p class="sub">會先自動備份一份（含所有班級；下載一份，也在這個瀏覽器裡留一份），然後清空<b>每一班</b>的：學生金幣與物種、任務打卡紀錄、聯絡簿、作業、點名紀錄、加扣分紀錄、班級山林等級、學生名單。<br>保留：班級清單（班名、科目）、學校名稱、作息表、週課表與班級標記、每日任務、倒數日、我的音樂、密碼。接著可到「班級管理」改班名、刪除或新增班級。</p>` : `<p class="sub">會先自動備份一份（下載一份，也在這個瀏覽器裡留一份），然後清空：學生金幣與物種、任務打卡紀錄、聯絡簿、點名紀錄、加扣分紀錄、班級山林等級、學生名單。<br>保留：學校名稱、作息表、每日任務、倒數日、我的音樂、密碼。接著會帶你設定新班級。</p>`}
       <button class="btn danger" id="dNewYear">開始新學年</button>
       <h4 style="margin-top:18px">完全重設</h4>
-      <p class="sub">清除所有資料（包含密碼${isMulti() ? '與所有班級' : ''}），回到第一次使用的狀態。</p>
+      <p class="sub">清除所有資料（包含密碼${isMulti() ? '、所有班級' : ''}、點名紀錄、瀏覽器裡的備份），回到第一次使用的狀態。</p>
       <button class="btn danger" id="dWipe">完全重設</button>
     </div>
     <div class="modal-actions"><button class="btn" id="dLogout">🔓 登出教師模式</button></div>`;
@@ -3586,7 +4007,7 @@ function ctData(el) {
   const refreshStatus = () => {
     const c = backupCfg();
     const s = backupStatusText(c);
-    const stEl = $('#bkStatus'); if (stEl) stEl.textContent = `上次備份：${s.last}　下次：${s.next}　${s.freq}`;
+    const stEl = $('#bkStatus'); if (stEl) stEl.textContent = `上次備份：${s.last}　下次：${s.next}　${s.freq}${backupTarget(c) === 'browser' ? '　（存在這個瀏覽器裡）' : ''}`;
     const fo = $('#bkFolder'); if (fo) fo.textContent = s.folder;
   };
   const saveBk = (patch, { reopen } = {}) => {
@@ -3596,41 +4017,37 @@ function ctData(el) {
     if (reopen) openConsole('data');
     else refreshStatus();
   };
+  renderSnapList();
   $('#dExport').onclick = () => exportData();
+  $('#dCopy').onclick = () => showBackupText(backupPayload(), backupFileName('手動備份'));
+  $('#dPaste').onclick = () => openPasteRestore();
   $('#dImport').onchange = e => {
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = () => {
-      try {
-        const d = JSON.parse(r.result);
-        const next = importBackupData(d);
-        const n = next.classes.length;
-        askConfirm(`要用備份檔「${f.name}」取代目前全部資料嗎？${isMulti() ? '\n（目前所有班級都會被取代）' : ''}${n > 1 ? `\n備份檔裡有 ${n} 個班級。` : ''}`, '還原').then(ok => {
-          if (!ok) return;
-          state = next;
-          drawnBy = {}; drawn = []; weekDraft = null; autoKey = null; refreshDrawUI();
-          setAuth();
-          stopMusic(); musicMissing.clear();
-          save(); renderAll(); renderMusic(); loadWeather();
-          const nFile = state.music.tracks.filter(t => t.kind === 'file').length;
-          if (nFile) {
-            toast(`✅ 已還原備份。備份只含音樂清單，不含音檔本身；有 ${nFile} 首本機音樂若顯示「請重新指定」，請重新選擇檔案`, 6000);
-            refreshMusicAvail();
-          } else toast('✅ 已還原備份');
-          openConsole('data');
-        });
-      } catch (err) { toast('❌ 這不是正確的備份檔'); }
-    };
+    r.onload = () => restoreFromText(r.result, `備份檔「${f.name}」`);
+    r.onerror = () => toast('❌ 讀不到這個檔案，可以改用「📋 貼上備份內容還原」');
     r.readAsText(f);
+  };
+  $('#bkSnaps').onclick = async e => {
+    const dl = e.target.closest('[data-snap-dl]'), rs = e.target.closest('[data-snap-restore]');
+    if (!dl && !rs) return;
+    const snap = await getSnapshot((dl || rs).dataset.snapDl || (dl || rs).dataset.snapRestore);
+    if (!snap) { toast('找不到這份備份'); renderSnapList(); return; }
+    if (dl) {
+      const ok = downloadText(snap.data, snap.name || backupFileName('瀏覽器備份'));
+      if (!ok || inIframe()) showBackupText(snap.data, snap.name || backupFileName('瀏覽器備份'), { tried: ok });
+      else toast('✅ 已下載「' + snap.name + '」');
+    } else restoreFromText(snap.data, `「${fmtWhen(new Date(snap.at))} ${snap.tag || ''}」這份瀏覽器裡的備份`);
   };
   $('#bkAuto').onchange = async () => {
     if ($('#bkAuto').checked) {
-      if (!backupCfg().folderName) {
+      if (backupTarget() === 'folder' && !backupCfg().folderName) {
         const handle = await pickBackupFolder();
-        if (!handle) { $('#bkAuto').checked = false; return; }
+        if (!handle && !lastPickBlocked) { $('#bkAuto').checked = false; return; }
+        if (!handle) { state.backup = { ...backupCfg(), target: 'browser' }; toast('這裡不能選資料夾，自動備份改存在這個瀏覽器裡', 4000); }
       }
       saveBk({ auto: true }, { reopen: true });
-      toast('✅ 已啟用自動備份（' + backupStatusText(backupCfg()).freq + '）');
+      toast('✅ 已啟用自動備份（' + backupStatusText(backupCfg()).freq + (backupTarget() === 'browser' ? '，存在這個瀏覽器裡' : '') + '）');
       maybeAutoBackup(true);
     } else {
       saveBk({ auto: false }, { reopen: true });
@@ -3638,6 +4055,14 @@ function ctData(el) {
       toast('已關閉自動備份，手動備份仍可使用');
     }
   };
+  $('#bkTgtFolder') && ($('#bkTgtFolder').onclick = async () => {
+    if (!backupCfg().folderName) {
+      const handle = await pickBackupFolder();
+      if (!handle) { if (lastPickBlocked) toast('這裡不能選資料夾，請用「這個瀏覽器裡」'); return; }
+    }
+    saveBk({ target: 'folder' }, { reopen: true });
+  });
+  $('#bkTgtBrowser') && ($('#bkTgtBrowser').onclick = () => { saveBk({ target: 'browser' }, { reopen: true }); hideBackupBanner(); });
   $('#bkDaily') && ($('#bkDaily').onclick = () => saveBk({ freq: 'daily' }, { reopen: true }));
   $('#bkWeekly') && ($('#bkWeekly').onclick = () => saveBk({ freq: 'weekly', weekdays: backupCfg().weekdays.length ? backupCfg().weekdays : [5] }, { reopen: true }));
   $('#bkWds') && ($('#bkWds').onclick = e => {
@@ -3652,8 +4077,14 @@ function ctData(el) {
   $('#bkPick') && ($('#bkPick').onclick = async () => {
     const handle = await pickBackupFolder();
     if (handle) { refreshStatus(); const p = $('#bkPick'); if (p) p.textContent = '📁 更改資料夾'; toast('✅ 已指定資料夾「' + handle.name + '」'); }
+    else if (lastPickBlocked) toast('這裡不能選資料夾，請用「這個瀏覽器裡」');
   });
   $('#bkNow') && ($('#bkNow').onclick = async () => {
+    if (backupTarget() === 'browser') {
+      try { await saveSnapshot('手動備份'); markBackupOk('瀏覽器內備份'); refreshStatus(); renderSnapList(); toast('✅ 已存一份備份在這個瀏覽器裡'); }
+      catch (err) { toast('❌ 瀏覽器裡存不下備份，請改用上方的手動備份'); }
+      return;
+    }
     let handle = await idbGet('backupDir');
     if (!handle) handle = await pickBackupFolder();
     if (!handle) return;
@@ -3672,12 +4103,14 @@ function ctData(el) {
     $('#dOld').value = $('#dNew').value = '';
   };
   $('#dNewYear').onclick = () => {
-    askConfirm(isMulti() ? `確定要開始新學年？全部 ${classList().length} 個班級的學生資料都會被清空（會先下載備份）。` : '確定要開始新學年？目前班級的學生資料會被清空（會先下載備份）。', '開始新學年').then(ok => {
+    askConfirm(isMulti() ? `確定要開始新學年？全部 ${classList().length} 個班級的學生資料都會被清空（會先備份）。` : '確定要開始新學年？目前班級的學生資料會被清空（會先備份）。', '開始新學年').then(async ok => {
       if (!ok) return;
-      exportData('學年結束備份');
+      let snapOk = false;
+      try { await saveSnapshot('學年結束備份'); snapOk = true; } catch (_) {}
+      exportData('學年結束備份', { quiet: true });
       newYearReset();
       save(); renderAll();
-      toast(isMulti() ? '✅ 每一班都已清空，請到「班級管理」與「座號與名單」設定新學年的班級' : '✅ 已清空，請設定新班級資料', 3500);
+      toast((isMulti() ? '✅ 每一班都已清空，請到「班級管理」與「座號與名單」設定新學年的班級' : '✅ 已清空，請設定新班級資料') + (snapOk ? '。清空前的資料也在「資料管理 → 存在這個瀏覽器裡的備份」' : ''), 5000);
       openConsole(isMulti() ? 'classes' : 'basic');
     });
   };
@@ -3689,19 +4122,10 @@ function ctData(el) {
       stopMusic();
       localStorage.removeItem(KEY); sessionStorage.removeItem('jl-auth');
       state.music = normalizeMusic(null);
-      idbDelPrefix('music').finally(() => location.reload());
+      Promise.all([idbDelPrefix('music'), idbDelPrefix(SNAP_PREFIX)]).finally(() => location.reload());
     });
   };
   $('#dLogout').onclick = () => { lockNow(); closeModal(); toast('🔒 已上鎖'); };
-}
-function exportData(tag = '手動備份') {
-  const blob = new Blob([backupPayload()], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = backupFileName(tag);
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  toast('✅ 已下載「' + backupFileName(tag) + '」');
 }
 
 
@@ -3856,8 +4280,8 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.8.1';
-const APP_UPDATED = '2026-11-18';
+const APP_VERSION = '1.9.0';
+const APP_UPDATED = '2026-11-19';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
@@ -3871,14 +4295,17 @@ if (typeof globalThis !== 'undefined') {
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,
     
-    APP_VERSION, askConfirm, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    APP_VERSION, askConfirm, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,
     getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, getMusicMissing: () => [...musicMissing], musicMem,
     isBackupDue, lastDueSlot, nextBackupAt, backupDays, backupCfg, backupFileName, backupPayload, DEFAULT_BACKUP, maybeAutoBackup,
+    folderUsable, backupTarget, saveSnapshot, listSnapshots, getSnapshot, pruneSnapshots, SNAP_KEEP, exportData, downloadText, copyText, showBackupText, restoreFromText, parseBackupText, openPasteRestore, pickBackupFolder, idbList,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
     setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
+    ATT, ATT_ABSENT, normalizeAttendance, pruneAttendance, setAttendance, markAllPresent, attendanceOf, absentSeats, attSummaryText, buildAttAnnPart,
+    presentSeats, todayAttendance, renderAttChip, renderAll, openAttendance, todayRate, renderTaskWidget, renderDailyTaskPanel, isAuthed, setAuth, lockNow,
     ensureClasses, normalizeState, importBackupData, switchClass, checkAutoSwitch, periodAt, periodKey, addClass, deleteClass, moveClass, setClassMode,
     newYearReset, setupMultiClasses, ttClassOf, classOnDate, isMulti, curClassObj, classLabel, renderClassSwitch, openSetup, openConsole, activeSeats,
     getDrawn: () => drawn, setDrawn: a => { drawn = a; }, getAutoKey: () => autoKey,

@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
 <link rel="icon" href="images/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png" sizes="180x180">
-<link rel="stylesheet" href="css/style.css?v=1.8.1">
+<link rel="stylesheet" href="css/style.css?v=1.9.0">
 </head>
 <body>
 
@@ -84,6 +84,8 @@
           <button type="button" id="classSwitchBtn" class="class-switch-btn" title="切換目前上課的班級">⇄ 換班級</button>
           <div id="classPop" class="class-pop" style="display:none" role="dialog" aria-label="切換班級"></div>
         </div>
+        <!-- 點名：今日缺席（誰都看得到；老師點進去點名） -->
+        <button type="button" id="attChip" class="att-chip att-none" style="display:none">🙋 點名</button>
       </div>
     </div>
     <div class="stats glass">
@@ -373,6 +375,7 @@
     <button data-goto="students"><span>🧑‍🤝‍🧑</span>全班夥伴</button>
     <button data-goto="dex"><span>📖</span>山林圖鑑</button>
     <button data-goto="stats"><span>📊</span>班級統計</button>
+    <button id="attNavBtn" type="button" title="點名：標記今天請假、曠課、遲到的同學（需教師登入）"><span>🙋</span>點名</button>
     <button id="consoleBtn"><span>🔒</span>教師控制台</button>
     <span class="spacer"></span>
     <!-- 版權文字 -->
@@ -402,6 +405,6 @@
 
 <script src="js/species.js"></script>
 <script src="js/voiceFilter.js"></script>
-<script src="js/app.js?v=1.8.1"></script>
+<script src="js/app.js?v=1.9.0"></script>
 </body>
 </html>

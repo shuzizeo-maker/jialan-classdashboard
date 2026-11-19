@@ -851,3 +851,54 @@ body[data-ann-size="xl"] { --ann-size: 54px; }
   .cls-add { grid-template-columns: 1fr 1fr; }
   .adj-head.multi, .adj-row.multi { grid-template-columns: 1fr 1fr; }
 }
+
+/* -------- v1.9.0 點名 -------- */
+.att-chip {
+  display: block; margin: 8px auto 0; max-width: min(560px, 92vw); border: 1px solid var(--line);
+  background: rgba(0,0,0,.28); color: var(--text); border-radius: 14px; padding: 6px 14px;
+  font-size: 17px; font-weight: 700; line-height: 1.45; letter-spacing: .04em; text-shadow: none; cursor: pointer;
+}
+.att-chip:hover { background: rgba(255,255,255,.14); }
+.att-chip.att-none { font-size: 14px; font-weight: 500; color: var(--muted); padding: 4px 12px; border-style: dashed; }
+.att-chip.att-has { background: rgba(255,138,101,.22); border-color: rgba(255,170,140,.6); color: #fff3ec; }
+.att-chip.att-all { background: rgba(143,214,148,.2); border-color: rgba(143,214,148,.5); }
+.marquee .ann-att { color: #ffb38a; text-shadow: 0 0 10px rgba(255,179,138,.6), 0 2px 4px rgba(0,0,0,.7); }
+.att-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.att-date input { background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; color: var(--text); }
+.att-sum { color: var(--muted); font-size: 14px; }
+.att-pick { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.att-pk { min-height: 46px; padding: 8px 16px; border-radius: 99px; border: 2px solid var(--line); background: rgba(255,255,255,.06); color: var(--text); font-size: 17px; font-weight: 700; cursor: pointer; }
+.att-pk.active { border-color: #fff; background: rgba(255,255,255,.22); box-shadow: 0 0 0 3px rgba(255,255,255,.18); }
+.att-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); }
+.att-seat { cursor: pointer; }
+.att-tag { font-style: normal; font-size: 12px; font-weight: 700; border-radius: 99px; padding: 0 8px; background: rgba(255,255,255,.12); color: var(--muted); }
+.att-tag.att-sick, .att-seat.att-sick { --att: #ff8a8a; }
+.att-tag.att-personal, .att-seat.att-personal { --att: #ffc46b; }
+.att-tag.att-official, .att-seat.att-official { --att: #7ad7ff; }
+.att-tag.att-truant, .att-seat.att-truant { --att: #ff5c8a; }
+.att-tag.att-late, .att-seat.att-late { --att: #c9a6ff; }
+.att-tag.att-sick, .att-tag.att-personal, .att-tag.att-official, .att-tag.att-truant, .att-tag.att-late { background: var(--att); color: #1d1d1d; }
+.att-seat.att-sick, .att-seat.att-personal, .att-seat.att-official, .att-seat.att-truant, .att-seat.att-late { border-color: var(--att); }
+.seat.absent { opacity: .55; }
+.seat.absent.att-seat { opacity: 1; background: rgba(0,0,0,.25); }
+.seat .att-tag { position: absolute; top: 4px; left: 6px; }
+.att-grid .seat .att-tag { position: static; margin-top: 2px; }
+.att-off { display: block; font-size: 12px; color: var(--muted); }
+.att-opt { margin: 4px 0; font-size: 14px; }
+.att-hist { display: flex; flex-wrap: wrap; gap: 6px; }
+.att-h { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text); border-radius: 10px; padding: 6px 10px; font-size: 13px; cursor: pointer; max-width: 100%; text-align: left; }
+.att-h span { color: var(--muted); }
+.att-h.active { border-color: var(--accent); }
+@media (max-width: 560px) {
+  .att-chip { font-size: 15px; }
+  .att-pk { flex: 1 1 40%; }
+}
+
+/* -------- v1.9.0 備份（嵌入 Google 協作平台也能用） -------- */
+.bk-text { width: 100%; min-height: 160px; max-height: 40vh; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.4; background: rgba(0,0,0,.3); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+.bk-steps { margin: 0 0 12px; padding-left: 22px; line-height: 1.8; font-size: 15px; }
+.bk-snaps { display: grid; gap: 6px; }
+.bk-snap { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.05); font-size: 14px; }
+.bk-snap-btns { display: flex; gap: 6px; }
+.bk-snap-btns .btn { padding: 5px 12px; }
+.modal-card .sub.bk-warn { background: rgba(245,196,107,.12); border: 1px solid rgba(245,196,107,.35); border-radius: 10px; padding: 8px 12px; color: var(--text); }
