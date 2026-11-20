@@ -1111,3 +1111,21 @@ body.exam-open .isl-pill { animation-play-state: paused; }
 a.tut-link { text-decoration: none; display: inline-block; color: inherit; }
 .tut-row a.tut-link { margin-left: 6px; padding: 3px 12px; font-size: 13px; }
 .modal-actions a.tut-link { margin-right: auto; }
+
+/* ===== 🎌 國定假日（v1.16.0） ===== */
+.marquee .ann-hol { color: #ff8a8a; text-shadow: 0 0 10px rgba(255,138,138,.65), 0 2px 4px rgba(0,0,0,.7); }
+.marquee .ann-work { color: #ffd166; text-shadow: 0 0 10px rgba(255,209,102,.6), 0 2px 4px rgba(0,0,0,.7); }
+.np-name.np-hol { color: #ffb0b0; }
+.hol-tag { display: block; margin-top: 2px; font-style: normal; font-size: 11px; font-weight: 700; color: #fff; background: rgba(214,69,69,.85); border-radius: 99px; padding: 0 6px; line-height: 1.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 12em; margin-left: auto; margin-right: auto; }
+.hol-tag.work { background: #f0a14a; color: #3a2208; }
+.week-table th.hol { color: #ffb0b0; }
+.week-table td.hol { background: rgba(214,69,69,.16); }
+.week-day.hol { border-color: rgba(214,69,69,.6); background: rgba(214,69,69,.12); }
+.week-day.hol .week-day-head b { color: #ffb0b0; }
+.week-hol { font-size: 12px; font-weight: 700; color: #fff; background: rgba(214,69,69,.8); border-radius: 8px; padding: 1px 8px; margin: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wc.hol b { opacity: .85; }
+.hol-up { display: flex; flex-direction: column; gap: 4px; }
+.hol-up-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 8px; align-items: center; padding: 4px 10px; border-radius: 10px; background: rgba(214,69,69,.12); font-size: 14px; }
+.hol-up-row.hu-work { background: rgba(240,161,74,.16); }
+.hol-up-row small { color: var(--muted); font-size: 12px; }
+.sd-row.sd-off .ap-emoji { filter: saturate(1.2); }

@@ -114,6 +114,302 @@ function syncExamMirror(st) {
   st.settings.examUrl = ex.url;
   st.settings.examBtn = !!ex.pinned;
 }
+/* ---------------- 🎌 國定假日與本校自訂（v1.16.0） ----------------
+ * 國定假日：內建行政院人事行政總處「中華民國政府行政機關辦公日曆表」115、116 年（2026、2027）官方 CSV 轉成的表；
+ *   只存「放假的平日」與「有名稱的假日」（HOL_BUILTIN），以及「週末補班」（HOL_WORK_BUILTIN，2026、2027 都沒有）。
+ *   內建以外的年份：設定 settings.holOnline（預設開）時，從 ruyut/TaiwanCalendar 的公開 CDN 網址（同一份官方資料的 JSON）下載，
+ *   存在這個瀏覽器的 localStorage（HOL_CACHE_KEY，不放進備份；完全重設會清掉）。沒有網路就先不顯示那一年。
+ * 本校自訂：state.schoolDays（所有班級共用、包含在備份裡、開始新學年保留），優先於國定假日：
+ *   { id, from, to, name, type: 'off' 放假 | 'work' 上課／補課, wd: 補課上星期幾的課（1～5） }
+ * 放假日：作息表顯示「🎌 今天 X 放假」、不算上課日（科任自動換班、整週課表、一週作業都會跳過）；補班／補課日照選定星期的課表上課。
+ */
+const HOL_BUILTIN = {
+  2026: { '01-01': '開國紀念日', '02-15': '小年夜', '02-16': '農曆除夕', '02-17': '春節', '02-18': '春節', '02-19': '春節', '02-20': '補假', '02-27': '補假', '02-28': '和平紀念日', '04-03': '補假', '04-04': '兒童節', '04-05': '清明節', '04-06': '補假', '05-01': '勞動節', '06-19': '端午節', '09-25': '中秋節', '09-28': '孔子誕辰紀念日／教師節', '10-09': '補假', '10-10': '國慶日', '10-25': '臺灣光復暨金門古寧頭大捷紀念日', '10-26': '補假', '12-25': '行憲紀念日' },
+  2027: { '01-01': '開國紀念日', '02-04': '小年夜', '02-05': '農曆除夕', '02-06': '春節', '02-07': '春節', '02-08': '春節', '02-09': '補假', '02-10': '補假', '02-28': '和平紀念日', '03-01': '補假', '04-04': '兒童節', '04-05': '清明節', '04-06': '補假', '04-30': '補假', '05-01': '勞動節', '06-09': '端午節', '09-15': '中秋節', '09-28': '孔子誕辰紀念日／教師節', '10-10': '國慶日', '10-11': '補假', '10-25': '臺灣光復暨金門古寧頭大捷紀念日', '12-24': '補假', '12-25': '行憲紀念日', '12-31': '補假' },
+};
+const HOL_WORK_BUILTIN = { 2026: {}, 2027: {} };
+const HOL_CACHE_KEY = 'jialan-holidays-v1';
+const HOL_CDN = y => `https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data/${y}.json`;
+const HOL_DAYS_OPTIONS = [1, 3, 7];
+const SCHOOL_OFF_NAMES = ['歲時祭儀', '寒假', '暑假', '颱風假', '校慶補假', '運動會補假', '停課'];
+const SCHOOL_WORK_NAMES = ['補課', '校慶', '運動會', '調整上課'];
+const HOL_GENERIC = ['補假', '放假', '小年夜', '農曆除夕', '調整放假'];
+const dkOf = d => typeof d === 'string' ? d.slice(0, 10) : dateKey(d);
+const dkDate = dk => { const [y, m, da] = String(dk).split('-').map(Number); return new Date(y, m - 1, da, 12, 0, 0); };
+const dkAdd = (dk, n) => { const d = dkDate(dk); d.setDate(d.getDate() + n); return dateKey(d); };
+const dkWd = dk => dkDate(dk).getDay();
+const holFmt = dk => { const d = dkDate(dk); return `${d.getMonth() + 1}/${d.getDate()}（${WEEK[d.getDay()]}）`; };
+let _holCache = null;   // 讀一次就記在記憶體（每秒都會用到）
+function holCache() {
+  if (_holCache) return _holCache;
+  try { const c = JSON.parse(localStorage.getItem(HOL_CACHE_KEY) || 'null'); _holCache = c && typeof c === 'object' && c.years ? c : { years: {} }; }
+  catch (e) { _holCache = { years: {} }; }
+  return _holCache;
+}
+// 把 ruyut/TaiwanCalendar 的 JSON（一年 365 天）轉成 { off: {'MM-DD': 名稱}, work: {...} }
+function parseHolJSON(arr, y) {
+  if (!Array.isArray(arr) || arr.length < 365) return null;
+  const off = {}, work = {};
+  for (const x of arr) {
+    const ds = String(x && x.date || '');
+    if (!/^\d{8}$/.test(ds) || ds.slice(0, 4) !== String(y)) return null;
+    const k = ds.slice(4, 6) + '-' + ds.slice(6), we = x.week === '六' || x.week === '日';
+    const note = String(x.description || '').trim().replace('/', '／').slice(0, 30);
+    if (x.isHoliday && (note || !we)) off[k] = note || '放假';
+    if (!x.isHoliday && we) work[k] = note || '補行上班';
+  }
+  return { off, work };
+}
+// 某一年的國定假日（內建 → 網路下載過的 → 沒有）
+function holYear(y) {
+  if (HOL_BUILTIN[y]) return { off: HOL_BUILTIN[y], work: HOL_WORK_BUILTIN[y] || {}, src: 'builtin' };
+  const c = holCache().years[y];
+  return c && c.off ? { off: c.off, work: c.work || {}, src: 'online', at: c.at } : null;
+}
+let holFetching = false;
+let holHourKey = -1;   // 每小時整點檢查一次
+// 下載還沒有的年份（今年、明年）；失敗 6 小時內不再試；網路版的資料 30 天更新一次
+async function refreshHolidays({ force = false, now = new Date() } = {}) {
+  if (holFetching) return { ok: false, msg: '正在更新' };
+  if (state.settings.holOnline === false && !force) return { ok: false, msg: '已關閉自動更新' };
+  if (typeof fetch !== 'function' || navigator.onLine === false) return { ok: false, msg: '沒有網路' };
+  const y0 = now.getFullYear();
+  const cache = holCache();
+  const want = [y0, y0 + 1].filter(y => {
+    if (HOL_BUILTIN[y]) return false;
+    const c = cache.years[y];
+    if (force) return true;
+    if (c && c.off) return Date.now() - (c.at || 0) > 30 * 86400000;
+    return !(c && c.failAt && Date.now() - c.failAt < 6 * 3600000);
+  });
+  if (!want.length) return { ok: true, got: [] };
+  holFetching = true;
+  const got = [];
+  try {
+    for (const y of want) {
+      try {
+        const data = parseHolJSON(await getJSON(HOL_CDN(y), 15000), y);
+        if (!data) throw new Error('格式不符');
+        cache.years[y] = { ...data, at: Date.now() };
+        got.push(y);
+      } catch (e) {
+        const old = cache.years[y] || {};
+        cache.years[y] = { ...old, failAt: Date.now() };   // 舊資料（如果有）留著繼續用
+      }
+    }
+    try { localStorage.setItem(HOL_CACHE_KEY, JSON.stringify(cache)); } catch (e) {}
+    _holCache = cache;
+  } finally { holFetching = false; }
+  if (got.length) { try { renderAll(); } catch (e) {} }
+  return { ok: got.length === want.length, got };
+}
+// 本校自訂（後面的優先）
+function schoolDayOn(dk) {
+  let hit = null;
+  (state.schoolDays || []).forEach(s => { if (s.from <= dk && dk <= (s.to || s.from)) hit = s; });
+  return hit;
+}
+// 這一天是什麼日子：{ type: 'off' 放假 | 'work' 補班／補課 | 'normal', name, src: 'school' | 'national', wd }
+function dayInfo(d) {
+  const dk = dkOf(d);
+  const sd = schoolDayOn(dk);
+  if (sd) return sd.type === 'work' ? { type: 'work', name: sd.name || '補課', src: 'school', wd: sd.wd || 1, dk } : { type: 'off', name: sd.name || '放假', src: 'school', dk };
+  if (state.settings.holShow !== false) {
+    const Y = holYear(+dk.slice(0, 4)), k = dk.slice(5);
+    if (Y && Y.work[k]) return { type: 'work', name: '補班', src: 'national', wd: 1, dk };
+    if (Y && Y.off[k]) return { type: 'off', name: Y.off[k], src: 'national', dk };
+  }
+  return { type: 'normal', dk };
+}
+const isOffDay = d => dayInfo(d).type === 'off';
+// 上課日：補班／補課日算；放假日不算；其他看星期一～五
+function isSchoolDay(d) {
+  const i = dayInfo(d);
+  if (i.type === 'work') return true;
+  if (i.type === 'off') return false;
+  const w = dkWd(i.dk); return w >= 1 && w <= 5;
+}
+// 課表要看星期幾（補班／補課日看老師選的那一天）
+function effWd(d) {
+  const i = dayInfo(d);
+  return i.type === 'work' ? i.wd : dkWd(i.dk);
+}
+function nextSchoolDay(from = new Date()) {
+  let dk = dkOf(from);
+  for (let i = 0; i < 120; i++) { dk = dkAdd(dk, 1); if (isSchoolDay(dk)) return dk; }
+  return '';
+}
+// 連假：連續的放假日＋週末（補班日會中斷）
+const offRunDay = dk => { const i = dayInfo(dk); if (i.type !== 'normal') return i.type === 'off'; const w = dkWd(dk); return w === 0 || w === 6; };
+function holRunAround(dk) {
+  let a = dk, b = dk;
+  for (let i = 0; i < 120 && offRunDay(dkAdd(a, -1)); i++) a = dkAdd(a, -1);
+  for (let i = 0; i < 120 && offRunDay(dkAdd(b, 1)); i++) b = dkAdd(b, 1);
+  const days = [];
+  for (let x = a; x <= b; x = dkAdd(x, 1)) days.push(x);
+  return days;
+}
+function holRunName(days) {
+  const names = [];
+  days.forEach(dk => { const i = dayInfo(dk); if (i.type === 'off' && !names.includes(i.name)) names.push(i.name); });
+  const main = names.filter(n => !HOL_GENERIC.includes(n));
+  const pick = main.length ? main : names.filter(n => n !== '補假');
+  return pick.length ? pick.slice(0, 2).join('、') : '';
+}
+// 公告用：今天起 N 天內的放假與補班
+function buildHolidayParts(now = new Date(), opt = {}) {
+  const s = state.settings;
+  const N = HOL_DAYS_OPTIONS.includes(+(opt.days ?? s.holAnnDays)) ? +(opt.days ?? s.holAnnDays) : 3;
+  const today = dkOf(now), tomorrow = dkAdd(today, 1);
+  const parts = [], seen = new Set();
+  const until = k => k === 0 ? '' : `（還有 ${k} 天）`;
+  const diff = dk => Math.round((dkDate(dk) - dkDate(today)) / 86400000);
+  for (let i = 0; i <= N; i++) {
+    const dk = dkAdd(today, i);
+    if (seen.has(dk) || !offRunDay(dk)) continue;
+    const run = holRunAround(dk);
+    run.forEach(x => seen.add(x));
+    // 整段都只是週末（例如假日剛好在星期六、日又沒有補假）→ 不公告
+    if (!run.some(x => { const w = dkWd(x); return w >= 1 && w <= 5 && dayInfo(x).type === 'off'; })) continue;
+    const name = holRunName(run);
+    const a = run[0], b = run[run.length - 1], n = run.length;
+    if (n === 1) {
+      const nm = name || '放假';
+      parts.push(a === today ? `🎌 今天 ${holFmt(a)} ${nm}，放假` : a === tomorrow ? `🎌 明天 ${holFmt(a)} ${nm} 放假` : `🎌 ${holFmt(a)} ${nm} 放假${until(diff(a))}`);
+    } else {
+      const label = !name ? `連假 ${n} 天` : /假$/.test(name) ? `${name} ${n} 天` : `${name}連假 ${n} 天`;
+      const range = `${holFmt(a)}～${holFmt(b)}`;
+      parts.push(a < today ? `🎌 ${label}，放到 ${holFmt(b)}` : a === today ? `🎌 今天起 ${range} ${label}` : a === tomorrow ? `🎌 明天起 ${range} ${label}` : `🎌 ${range} ${label}${until(diff(a))}`);
+    }
+  }
+  if (s.holAnnWork !== false) {
+    for (let i = 0; i <= N; i++) {
+      const dk = dkAdd(today, i), inf = dayInfo(dk);
+      if (inf.type !== 'work') continue;
+      const when = dk === today ? '今天 ' : dk === tomorrow ? '明天 ' : '';
+      const nm = inf.src === 'national' ? '補班' : (inf.name || '補課');
+      parts.push(`⚠️ ${when}${holFmt(dk)} ${nm}，要上課（上星期${WEEK[inf.wd]}的課）${when ? '' : until(i)}`);
+    }
+  }
+  return parts;
+}
+// 接下來的放假／補班清單（控制台預覽）
+function upcomingHolidays(days = 120, now = new Date()) {
+  const today = dkOf(now), list = [];
+  for (let i = 0; i <= days; i++) {
+    const dk = dkAdd(today, i), inf = dayInfo(dk), w = dkWd(dk);
+    if (inf.type === 'work' || (inf.type === 'off' && (w >= 1 && w <= 5 || inf.src === 'school' || !HOL_GENERIC.includes(inf.name)))) list.push(inf);
+  }
+  return list;
+}
+function normalizeSchoolDays(list) {
+  const okDk = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !isNaN(dkDate(v));
+  return (Array.isArray(list) ? list : []).filter(x => x && okDk(x.from)).map(x => {
+    const to = okDk(x.to) && x.to >= x.from ? x.to : x.from;
+    const type = x.type === 'work' ? 'work' : 'off';
+    const o = { id: String(x.id || 's' + uid()), from: x.from, to, name: String(x.name || '').trim().slice(0, 20) || (type === 'work' ? '補課' : '放假'), type };
+    if (type === 'work') o.wd = [1, 2, 3, 4, 5].includes(+x.wd) ? +x.wd : 1;
+    return o;
+  }).sort((a, b) => a.from.localeCompare(b.from));
+}
+// 國定假日資料狀態（控制台顯示）
+function holStatusText(now = new Date()) {
+  const y0 = now.getFullYear();
+  return [y0, y0 + 1].map(y => {
+    const Y = holYear(y);
+    if (Y && Y.src === 'builtin') return `${y} 年：內建（行政院人事行政總處）`;
+    if (Y) return `${y} 年：已從網路更新（${new Date(Y.at).getMonth() + 1}/${new Date(Y.at).getDate()}）`;
+    return `${y} 年：還沒有資料${state.settings.holOnline === false ? '（自動更新已關閉）' : '（連上網路時會自動下載；政府通常在前一年 6～7 月公布）'}`;
+  }).join('；');
+}
+
+/* ---- 教師控制台 → 🎌 假日 ---- */
+let sdEditId = null;   // null：沒在編輯；''：新增
+function upsertSchoolDay(data, id = '') {
+  const from = String(data.from || ''), to = String(data.to || '') || from;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) return { ok: false, msg: '請選開始日期' };
+  if (to < from) return { ok: false, msg: '結束日期不能比開始日期早' };
+  if (Math.round((dkDate(to) - dkDate(from)) / 86400000) > 120) return { ok: false, msg: '一筆最多 120 天，寒暑假請分開輸入' };
+  const rec = normalizeSchoolDays([{ ...data, from, to, id: id || 's' + uid() }])[0];
+  const i = id ? state.schoolDays.findIndex(x => x.id === id) : -1;
+  if (i >= 0) state.schoolDays[i] = rec; else state.schoolDays.push(rec);
+  state.schoolDays = normalizeSchoolDays(state.schoolDays);
+  save(); renderAll();
+  return { ok: true, rec };
+}
+function deleteSchoolDay(id) {
+  const n = state.schoolDays.length;
+  state.schoolDays = state.schoolDays.filter(x => x.id !== id);
+  if (state.schoolDays.length !== n) { save(); renderAll(); return true; }
+  return false;
+}
+const sdRange = x => x.to && x.to !== x.from ? `${holFmt(x.from)}～${holFmt(x.to)}` : holFmt(x.from);
+function ctHoliday(el) {
+  const s = state.settings;
+  const ed = sdEditId === null ? null : (sdEditId ? state.schoolDays.find(x => x.id === sdEditId) : { from: dateKey(), to: '', name: '', type: 'off', wd: 1 });
+  const up = upcomingHolidays(120).slice(0, 15);
+  el.innerHTML = `<p class="sub">國定假日會自動標在作息表、整週課表、一週作業和日期上，也會出現在跑馬燈公告。放假的平日不算上課日（科任老師的自動換班也會跳過）。</p>
+    <h4 style="margin:6px 0 8px">⚙️ 設定（所有班級共用）</h4>
+    <label class="chk" style="font-size:14px"><input type="checkbox" id="hShow" ${s.holShow !== false ? 'checked' : ''}> 顯示國定假日（關掉後只看「本校自訂」）</label>
+    <div class="field" style="margin:8px 0"><span>公告提前幾天提醒放假</span><select id="hDays">${HOL_DAYS_OPTIONS.map(n => `<option value="${n}"${+s.holAnnDays === n || (!HOL_DAYS_OPTIONS.includes(+s.holAnnDays) && n === 3) ? ' selected' : ''}>${n} 天${n === 3 ? '（預設）' : ''}</option>`).join('')}</select></div>
+    <label class="chk" style="font-size:14px"><input type="checkbox" id="hWork" ${s.holAnnWork !== false ? 'checked' : ''}> 公告提醒補班、補課（「⚠️ …補班，要上課」）</label>
+    <label class="chk" style="font-size:14px"><input type="checkbox" id="hOnline" ${s.holOnline !== false ? 'checked' : ''}> 沒有內建的年份，自動從網路下載國定假日</label>
+    <p class="sub hol-status" id="hStatus" style="font-size:12px">${esc(holStatusText())}</p>
+    <div class="modal-actions" style="justify-content:space-between"><button type="button" class="btn" id="hRefresh">🔄 立刻從網路更新</button><button type="button" class="primary" id="hSave">儲存設定</button></div>
+    <h4 style="margin:16px 0 8px">🏫 本校自訂（優先於國定假日）</h4>
+    <p class="sub" style="font-size:13px">原住民族歲時祭儀、寒暑假、颱風假、校慶補假……加成「放假」；要補課的日子加成「上課（補課）」，並選上哪一天的課。所有班級共用，包含在備份裡，開始新學年會保留。</p>
+    ${ed ? `<div class="ap-edit" id="sdEdit">
+      <h4 style="margin:0 0 8px">${sdEditId ? '✏️ 編輯' : '＋ 新增'}</h4>
+      <div class="ap-grid ap-grid2">
+        <div class="field"><span>開始日期</span><input type="date" id="sdFrom" value="${esc(ed.from)}"></div>
+        <div class="field"><span>結束日期（只有一天就留空）</span><input type="date" id="sdTo" value="${esc(ed.to && ed.to !== ed.from ? ed.to : '')}"></div>
+      </div>
+      <div class="ap-grid ap-grid2">
+        <div class="field"><span>類型</span><select id="sdType"><option value="off"${ed.type !== 'work' ? ' selected' : ''}>🎌 放假</option><option value="work"${ed.type === 'work' ? ' selected' : ''}>📚 上課（補課）</option></select></div>
+        <div class="field"><span>名稱</span><input id="sdName" maxlength="20" list="sdNames" value="${esc(ed.name)}" placeholder="${ed.type === 'work' ? '例如：補課' : '例如：歲時祭儀'}"><datalist id="sdNames">${[...SCHOOL_OFF_NAMES, ...SCHOOL_WORK_NAMES].map(n => `<option value="${esc(n)}">`).join('')}</datalist></div>
+      </div>
+      <div class="field" id="sdWdRow" style="display:${ed.type === 'work' ? '' : 'none'}"><span>這天上哪一天的課</span><select id="sdWd">${[1, 2, 3, 4, 5].map(w => `<option value="${w}"${(ed.wd || 1) === w ? ' selected' : ''}>星期${WEEK[w]}的課表</option>`).join('')}</select></div>
+      <div class="err" id="sdErr"></div>
+      <div class="modal-actions"><button type="button" class="btn" id="sdCancel">取消</button><button type="button" class="primary" id="sdSave">儲存</button></div>
+    </div>` : `<div class="modal-actions" style="justify-content:flex-start;margin-top:0"><button type="button" class="primary" id="sdAdd">＋ 新增本校放假／補課</button></div>`}
+    <div class="ap-list" id="sdList">${state.schoolDays.map(x => `<div class="ap-row sd-row sd-${x.type}" data-id="${esc(x.id)}">
+      <span class="ap-emoji">${x.type === 'work' ? '📚' : '🎌'}</span>
+      <div class="ap-info"><b>${esc(x.name)}</b><small>${esc(sdRange(x))}・${x.type === 'work' ? `上課（星期${WEEK[x.wd]}的課）` : '放假'}</small></div>
+      <div class="ap-btns"><button type="button" class="btn" data-sd-edit="${esc(x.id)}">✏️ 編輯</button><button type="button" class="btn danger" data-sd-del="${esc(x.id)}">🗑️ 刪除</button></div></div>`).join('') || '<div class="empty">還沒有本校自訂的日子</div>'}</div>
+    <h4 style="margin:16px 0 6px">🗓️ 接下來 120 天的放假與補班</h4>
+    <div class="hol-up" id="hUp">${up.map(i => `<div class="hol-up-row hu-${i.type}"><span class="d">${holFmt(i.dk)}</span><b>${esc(i.type === 'work' && i.src === 'national' ? '補班' : i.name)}</b><small>${i.src === 'school' ? '本校' : '國定'}${i.type === 'work' ? `・上課（星期${WEEK[i.wd]}的課）` : '・放假'}</small></div>`).join('') || '<div class="empty">接下來 120 天沒有國定假日或本校自訂的日子</div>'}</div>`;
+  const redraw = () => ctHoliday(el);
+  $('#hSave').onclick = () => {
+    s.holShow = $('#hShow').checked; s.holAnnDays = +$('#hDays').value || 3; s.holAnnWork = $('#hWork').checked; s.holOnline = $('#hOnline').checked;
+    save(); renderAll(); toast('✅ 假日設定已儲存');
+    if (s.holOnline) refreshHolidays().then(() => { const st = $('#hStatus'); if (st) st.textContent = holStatusText(); });
+    redraw();
+  };
+  $('#hRefresh').onclick = async () => {
+    $('#hStatus').textContent = '更新中…';
+    const r = await refreshHolidays({ force: true });
+    const st = $('#hStatus'); if (st) st.textContent = holStatusText();
+    toast(r.got && r.got.length ? `✅ 已更新 ${r.got.join('、')} 年的國定假日` : r.msg === '沒有網路' ? '⚠️ 沒有網路，等連上網路再試' : r.ok ? '內建的年份不用更新，已經是最新' : '⚠️ 這次沒有更新成功（可能還沒公布），會再自動試', 4000);
+  };
+  if ($('#sdAdd')) $('#sdAdd').onclick = () => { sdEditId = ''; redraw(); };
+  if ($('#sdType')) $('#sdType').onchange = e => { $('#sdWdRow').style.display = e.target.value === 'work' ? '' : 'none'; };
+  if ($('#sdCancel')) $('#sdCancel').onclick = () => { sdEditId = null; redraw(); };
+  if ($('#sdSave')) $('#sdSave').onclick = () => {
+    const r = upsertSchoolDay({ from: $('#sdFrom').value, to: $('#sdTo').value, name: $('#sdName').value, type: $('#sdType').value, wd: +$('#sdWd').value }, sdEditId);
+    if (!r.ok) { $('#sdErr').textContent = '⚠️ ' + r.msg; return; }
+    toast(`✅ 已儲存「${r.rec.name}」${sdRange(r.rec)}`);
+    sdEditId = null; redraw();
+  };
+  $('#sdList').onclick = async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.sdEdit) { sdEditId = b.dataset.sdEdit; redraw(); return; }
+    if (b.dataset.sdDel) {
+      const x = state.schoolDays.find(y => y.id === b.dataset.sdDel); if (!x) return;
+      if (!(await askConfirm(`確定刪除「${x.name}」（${sdRange(x)}）？`, '刪除'))) return;
+      deleteSchoolDay(x.id); toast(`🗑️ 已刪除「${x.name}」`); if (sdEditId === x.id) sdEditId = null; redraw();
+    }
+  };
+}
 const spById = id => SP.find(s => s.id === id);
 
 /* ---------------- 資料 ---------------- */
@@ -193,6 +489,7 @@ function defaults() {
       examBtn: true, // 底部是否顯示「📝 監考」
       timerStyle: 'island', // 計時器畫面：island＝🏝️ 3D 島嶼、simple＝簡潔
       drawAnim: 'random', // 抽號動畫：random、slot、wheel、gacha、cards、pet、off
+      holShow: true, holAnnDays: 3, holAnnWork: true, holOnline: true, // 🎌 國定假日：顯示、公告提前幾天、提醒補班、自動從網路更新
       loc: { name: '臺東縣 金峰鄉', lat: 22.60, lon: 120.96, source: 'openmeteo', cwaKey: '', cwaDataset: 'F-D0047-037', cwaTown: '金峰鄉' }
     },
     schedule: DEFAULT_SCHEDULE.map(r => ({ ...r })),
@@ -222,6 +519,7 @@ function defaults() {
     redemptions: [], coinManual: [], coinDaily: {}, // 金幣存摺（每班各自）
     prizes: [], // 獎品清單（所有班級共用）
     apps: defaultApps(), // 🧩 應用中心（所有班級共用）
+    schoolDays: [], // 🎌 本校自訂放假／補課（所有班級共用）
     appsSeen: BUILTIN_APP_IDS.slice(), // 已經自動加過的內建應用（刪掉的不會再加回來）
     ui: { widgetTask: 't1', pageTask: 't1', tasksTab: 'hw', showHwDone: false, hwBrush: 'done' }
   };
@@ -256,6 +554,12 @@ function normalizeState(s) {
     if (!['island', 'simple'].includes(merged.settings.timerStyle)) merged.settings.timerStyle = 'island';
     if (!['random', 'slot', 'wheel', 'gacha', 'cards', 'pet', 'off'].includes(merged.settings.drawAnim)) merged.settings.drawAnim = 'random';
     if (!HW_BRUSH_ORDER.includes(merged.ui.hwBrush)) merged.ui.hwBrush = 'done';
+    // v1.16.0 🎌 假日
+    merged.settings.holShow = merged.settings.holShow !== false;
+    merged.settings.holAnnWork = merged.settings.holAnnWork !== false;
+    merged.settings.holOnline = merged.settings.holOnline !== false;
+    if (!HOL_DAYS_OPTIONS.includes(+merged.settings.holAnnDays)) merged.settings.holAnnDays = 3; else merged.settings.holAnnDays = +merged.settings.holAnnDays;
+    merged.schoolDays = normalizeSchoolDays(merged.schoolDays);
     // v1.13.0 金幣存摺：舊資料補上 earned／spent、兌換紀錄等欄位
     merged.prizes = normalizePrizes(merged.prizes);
     fixClassBook(merged);
@@ -606,8 +910,9 @@ function renderWeekPlanner() {
   $('#weekGrid').innerHTML = keys.map((dk, i) => {
     const lines = weekDraft.lines[dk] || [''];
     const [y, m, d] = dk.split('-').map(Number);
-    return `<div class="week-day" data-date="${dk}" data-i="${i}">
-      <div class="week-day-head"><b>週${DAYN[i]}</b><small>${m}/${d}</small></div>
+    const inf = dayInfo(dk);
+    return `<div class="week-day${inf.type === 'off' ? ' hol' : ''}" data-date="${dk}" data-i="${i}">
+      <div class="week-day-head"><b>週${DAYN[i]}</b><small>${m}/${d}</small></div>${inf.type === 'off' ? `<div class="week-hol">🎌 ${esc(inf.name)}・放假</div>` : ''}
       <div class="week-day-lines">${lines.map((v, li) =>
         `<div class="week-line" data-li="${li}">
           <input value="${esc(v)}" placeholder="作業（可空白）" maxlength="80">
@@ -1160,10 +1465,11 @@ function buildCountdownParts(countdowns, max = 3) {
     .map(({ c, d }) => d === 0 ? `⏳ 今天就是${c.name}！` : `⏳ 距離${c.name}還有 ${d} 天`);
 }
 // taskSeats：每日任務只算今天有到的人（請假的同學不會被列在「尚未…」）；attPart：點名的今日缺席
-function buildAnnParts(announcement, taskDefs, seats, doneRec, homework, countdowns, taskSeats = seats, attPart = '') {
+function buildAnnParts(announcement, taskDefs, seats, doneRec, homework, countdowns, taskSeats = seats, attPart = '', holParts = []) {
   const ann = (announcement || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   if (attPart) ann.push(attPart);
   ann.push(...buildCountdownParts(countdowns));
+  ann.push(...(holParts || []));   // 🎌 放假、⚠️ 補班
   const auto = [];
   if (taskSeats.length) {
     (taskDefs || []).forEach(t => {
@@ -1221,7 +1527,9 @@ function renderHeader() {
   const seats = activeSeats();
   const att = todayAttendance();
   const attPart = s.attAnnounce !== false ? buildAttAnnPart(att, s.names, !!s.attNames) : '';
-  const parts = buildAnnParts(withClassName(s.announcement, s.school, s.className), state.taskDefs, seats, todayDone(), state.homework, state.countdowns, presentSeats(), attPart);
+  const offToday = isOffDay(new Date());
+  // 放假日不列「尚未完成的每日任務」（大家都不在學校）
+  const parts = buildAnnParts(withClassName(s.announcement, s.school, s.className), state.taskDefs, seats, todayDone(), state.homework, state.countdowns, offToday ? [] : presentSeats(), attPart, buildHolidayParts());
   renderAttChip(att);
   const text = parts.length ? parts.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
   const annEl = $('#annText');
@@ -1231,7 +1539,7 @@ function renderHeader() {
     if (parts.length) {
       // 依公告類型上高亮色：老師公告＝螢光黃、未繳＝亮粉紅、待訂正＝亮橘、每日任務未完成＝亮青
       annEl.innerHTML = parts.map(p => {
-        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : p.startsWith('⏳') ? 'ann-cd' : p.startsWith('🙋') ? 'ann-att' : 'ann-note';
+        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : p.startsWith('⏳') ? 'ann-cd' : p.startsWith('🙋') ? 'ann-att' : p.startsWith('🎌') ? 'ann-hol' : p.startsWith('⚠️') ? 'ann-work' : 'ann-note';
         return `<b class="${c}">${esc(p)}</b>`;
       }).join('<i class="ann-sep">　　★　　</i>');
     } else annEl.textContent = text;
@@ -1281,7 +1589,8 @@ const dayTT = wd => state.timetable?.[wd] || {};
 const hasTT = wd => Object.values(dayTT(wd)).some(v => String(v || '').trim());
 // 平常的課表（不看當天調課）：該天課表有填 → 依課表（空格=沒課）；該天課表全空 → 依作息表的「星期」欄
 function regularSchedule(d = new Date()) {
-  const wd = d.getDay(), wdc = WEEK[wd], tt = dayTT(wd), useTT = hasTT(wd);
+  if (isOffDay(d)) return [];   // v1.16.0：國定假日、本校放假日沒有課
+  const wd = effWd(d), wdc = WEEK[wd], tt = dayTT(wd), useTT = hasTT(wd);
   return state.schedule
     .filter(r => r.slot ? (useTT ? !!String(tt[r.slot] || '').trim() : (r.days || '').includes(wdc)) : (!r.days || r.days.includes(wdc)))
     .map(r => {
@@ -1300,7 +1609,8 @@ function classOnDate(d, slot) {
     const p = ov.periods.find(r => r.slot === slot);
     return p ? String(p.classId || '') : '';
   }
-  return ttClassOf(d.getDay(), slot);
+  if (isOffDay(d)) return '';
+  return ttClassOf(effWd(d), slot);
 }
 // 畫面上顯示的班級小標籤（只在多班級模式）
 function clsTag(id, cls = 'cls-tag') {
@@ -1367,7 +1677,8 @@ function subjectOnDate(d, slot) {
     const p = ov.periods.find(r => r.slot === slot);
     return p ? String(p.subject || '').trim() : '';
   }
-  return String(dayTT(d.getDay())[slot] || '').trim();
+  if (isOffDay(d)) return '';
+  return String(dayTT(effWd(d))[slot] || '').trim();
 }
 
 const periodLabel = r => r.subject ? `${r.name}・${r.subject}` : r.name;
@@ -1391,12 +1702,20 @@ function renderSchedule() {
     if (ov) {
       noteEl.style.display = '';
       noteEl.textContent = ov.note ? `🔄 今日調課・${ov.note}` : '🔄 今日課表已調整，平常的週課表沒有更動。';
-    } else { noteEl.style.display = 'none'; noteEl.textContent = ''; }
+    } else {
+      const inf = dayInfo(d);
+      if (inf.type === 'work') { noteEl.style.display = ''; noteEl.textContent = `⚠️ 今天${inf.src === 'national' ? '補班' : inf.name}，上星期${WEEK[inf.wd]}的課`; }
+      else { noteEl.style.display = 'none'; noteEl.textContent = ''; }
+    }
   }
   const box = $('#nowPeriod');
   if (!list.length) {
     $('#schedList').innerHTML = '';
     if (ov) box.innerHTML = `<div class="np-name">今天沒有排課</div><div class="np-sub">${ov.note ? esc(ov.note) : '已用臨時調課清空今天的節次。'}</div>`;
+    else if (isOffDay(d)) {
+      const inf = dayInfo(d), nx = nextSchoolDay(d);
+      box.innerHTML = `<div class="np-name np-hol">🎌 今天 ${esc(inf.name)} 放假</div><div class="np-sub">好好休息！${nx ? `下一個上課日是 ${holFmt(nx)}` : ''}</div>`;
+    }
     else box.innerHTML = `<div class="np-name">今天是假日 🌿</div><div class="np-sub">好好休息，下週見！</div>`;
     return null;
   }
@@ -1435,8 +1754,9 @@ function weekTableHTML() {
   const rows = SLOTS.filter(s => [1, 2, 3, 4, 5].some(w => subjectOnDate(dates[w], s) || String(dayTT(w)[s] || '').trim()));
   if (!rows.length) return '<div class="empty">還沒有填寫週課表。請到「教師控制台 → 週課表」填寫，或從 Excel／照片匯入。</div>';
   return `<table class="week-table"><thead><tr><th></th>${[1, 2, 3, 4, 5].map(w => {
-    const ov = getOverride(dates[w]);
-    return `<th class="${w === today ? 'today' : ''}${ov ? ' has-adj' : ''}">星期${WEEK[w]}${ov ? ' <i class="adj-tag">調</i>' : ''}</th>`;
+    const ov = getOverride(dates[w]), inf = dayInfo(dates[w]);
+    const hol = inf.type === 'off' ? `<i class="hol-tag">🎌 ${esc(inf.name)}</i>` : inf.type === 'work' ? `<i class="hol-tag work">⚠️ ${esc(inf.src === 'national' ? '補班' : inf.name)}</i>` : '';
+    return `<th class="${w === today ? 'today' : ''}${ov ? ' has-adj' : ''}${inf.type === 'off' ? ' hol' : ''}">星期${WEEK[w]}${ov ? ' <i class="adj-tag">調</i>' : ''}${hol}</th>`;
   }).join('')}</tr></thead>
     <tbody>${rows.map(s => `<tr><th>${slotName(s)}<small>${slotTime(s)}</small></th>${[1, 2, 3, 4, 5].map(w => {
       const ov = getOverride(dates[w]);
@@ -1445,11 +1765,12 @@ function weekTableHTML() {
       const ch = ov && v !== orig;
       const cid = v ? classOnDate(dates[w], s) : '';
       const chC = ov && cid !== ttClassOf(w, s);
-      return `<td class="${w === today ? 'today' : ''} ${w === today && s === curSlot ? 'now' : ''} ${v ? '' : 'none'}${ch || chC ? ' adj' : ''}">${esc(v) || '—'}${clsTag(cid, 'cls-tag blk')}${ch || chC ? '<i class="adj-tag">調</i>' : ''}</td>`;
+      const offC = !ov && isOffDay(dates[w]) ? ' hol' : '';
+      return `<td class="${w === today ? 'today' : ''} ${w === today && s === curSlot ? 'now' : ''} ${v ? '' : 'none'}${ch || chC ? ' adj' : ''}${offC}">${esc(v) || '—'}${clsTag(cid, 'cls-tag blk')}${ch || chC ? '<i class="adj-tag">調</i>' : ''}</td>`;
     }).join('')}</tr>`).join('')}</tbody></table>`;
 }
 $('#weekBtn') && ($('#weekBtn').onclick = () => openModal(`<button class="close" data-close>✕</button>
-  <h2>📅 ${isMulti() ? '我的' : esc(state.settings.className) + ' '}週課表</h2><p class="sub">${esc(termText())}　今天的欄位以綠色標示，正在上的課會發亮。本週有調課的日子會標上「調」。</p>
+  <h2>📅 ${isMulti() ? '我的' : esc(state.settings.className) + ' '}週課表</h2><p class="sub">${esc(termText())}　今天的欄位以綠色標示，正在上的課會發亮。本週有調課的日子會標上「調」，放假的日子是紅色。</p>
   ${weekTableHTML()}`, { wide: true }));
 $('#adjustBtn') && ($('#adjustBtn').onclick = () => openAdjustModal());
 let _afterUnlock = null;
@@ -1738,7 +2059,8 @@ function tick() {
   const hh = pad(d.getHours()), mm = pad(d.getMinutes()), ss = pad(d.getSeconds());
   $('#bigClock').innerHTML = `${hh}:${mm}<span>${ss}</span>`;
   updateLockUI();
-  $('#wDate').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日　星期${WEEK[d.getDay()]}`;
+  const hinf = dayInfo(d);
+  $('#wDate').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日　星期${WEEK[d.getDay()]}` + (hinf.type === 'off' ? `　🎌 ${hinf.name}` : hinf.type === 'work' ? `　⚠️ ${hinf.src === 'national' ? '補班' : hinf.name}` : '');
   try { checkAutoSwitch(d); } catch (e) { console.warn(e); }
   const cur = renderSchedule();
   const cc = cur && isMulti() && cur.classId ? classById(cur.classId) : null;
@@ -1751,6 +2073,7 @@ function tick() {
     updateSky();
     if (d.getMinutes() % 30 === 0) loadWeather();
     if (d.getHours() === 0 && d.getMinutes() === 0) renderAll();
+    if (d.getMinutes() === 0 && holHourKey !== d.getHours()) { holHourKey = d.getHours(); refreshHolidays().catch(() => {}); }
     try { maybeAutoBackup(); } catch (_) {}
   }
 }
@@ -2849,7 +3172,8 @@ function renderHomeworkPanel() {
   const box = $('#hwOpenList');
   if (!box) return;
   if (!open.length) {
-    box.innerHTML = '<p class="hint">目前沒有待檢查的作業。今天聯絡簿新增的項目，<b>明天</b>才會出現在這裡；也可按「＋ 補登作業」。</p>';
+    const nx = nextSchoolDay();
+    box.innerHTML = `<p class="hint">${isOffDay(new Date()) ? `🎌 今天放假（${esc(dayInfo(new Date()).name)}）。` : ''}目前沒有待檢查的作業。今天聯絡簿新增的項目，<b>${nx && nx !== dkAdd(dateKey(), 1) ? `下一個上課日 ${holFmt(nx)}` : '明天'}</b>才會出現在這裡；也可按「＋ 補登作業」。</p>`;
   } else {
     box.innerHTML = open.map(h => hwCardHTML(h, seats)).join('');
   }
@@ -3039,8 +3363,9 @@ document.addEventListener('click', e => {
     const keys = weekdaysOf(weekDraft.anchor);
     const src = (weekDraft.lines[keys[0]] || []).map(s => s.trim()).filter(Boolean);
     if (!src.length) return toast('請先在「週一」填至少一項');
-    keys.slice(1).forEach(dk => { weekDraft.lines[dk] = src.slice(); });
-    renderWeekPlanner(); toast('已套用到週二～週五（尚未儲存）');
+    const offs = keys.slice(1).filter(dk => isOffDay(dk));
+    keys.slice(1).forEach(dk => { if (!isOffDay(dk)) weekDraft.lines[dk] = src.slice(); });
+    renderWeekPlanner(); toast(offs.length ? `已套用到週二～週五，跳過放假的 ${offs.map(hwShortDate).join('、')}（尚未儲存）` : '已套用到週二～週五（尚未儲存）', 3500);
     return;
   }
   if (e.target.closest('#weekSave')) {
@@ -3087,8 +3412,11 @@ document.addEventListener('click', e => {
     const keys = weekdaysOf(weekDraft.anchor);
     if (i >= keys.length - 1) return;
     const src = (weekDraft.lines[dk] || []).map(s => s.trim()).filter(Boolean);
-    weekDraft.lines[keys[i + 1]] = src.length ? src.slice() : [''];
-    renderWeekPlanner(); toast('已複製到下一天（尚未儲存）');
+    let j = i + 1;
+    while (j < keys.length && isOffDay(keys[j])) j++;   // 下一天放假 → 複製到下一個上課日
+    if (j >= keys.length) return toast('這一週後面的日子都放假，沒有複製');
+    weekDraft.lines[keys[j]] = src.length ? src.slice() : [''];
+    renderWeekPlanner(); toast(j > i + 1 ? `下一天放假，已複製到 ${hwShortDate(keys[j])}（尚未儲存）` : '已複製到下一天（尚未儲存）');
   }
 });
 
@@ -3834,8 +4162,8 @@ function renderStats() {
   const days = [];
   for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push(d); }
   $('#weekChart').innerHTML = days.map(d => {
-    const r = todayRate(dateKey(d));
-    return `<div class="wc"><b>${r}%</b><i style="height:${Math.max(r, 1) * .8}%"></i><span>${d.getMonth() + 1}/${d.getDate()}<br>週${WEEK[d.getDay()]}</span></div>`;
+    const r = todayRate(dateKey(d)), off = isOffDay(d) && !r;
+    return `<div class="wc${off ? ' hol' : ''}"${off ? ` title="${esc(dayInfo(d).name)}"` : ''}><b>${off ? '🎌' : r + '%'}</b><i style="height:${Math.max(r, 1) * .8}%"></i><span>${d.getMonth() + 1}/${d.getDate()}<br>週${WEEK[d.getDay()]}</span></div>`;
   }).join('');
   const max = Math.max(10, ...coins);
   $('#seatBars').innerHTML = seats.map((n, i) => `<div class="sb"><span>${pad(n)} ${esc(nameOf(n))}</span><div class="bar"><i style="width:${coins[i] / max * 100}%"></i></div><span>${coins[i]}</span></div>`).join('');
@@ -4061,7 +4389,7 @@ function teacherOpen(tab, focusSel) {
 let consoleTab = 'basic';
 function openConsole(tab) {
   if (tab) consoleTab = tab;
-  const tabs = [['basic', '基本資料'], ['classes', '班級管理'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['tasks', '每日任務'], ['points', '加扣金幣／兌換'], ['apps', '🧩 應用中心'], ['data', '資料管理'], ['notes', '📜 更新紀錄']];
+  const tabs = [['basic', '基本資料'], ['classes', '班級管理'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['holiday', '🎌 假日'], ['tasks', '每日任務'], ['points', '加扣金幣／兌換'], ['apps', '🧩 應用中心'], ['data', '資料管理'], ['notes', '📜 更新紀錄']];
   openModal(`<button class="close" data-close>✕</button>
     <h2>🛠️ 教師控制台</h2><p class="sub">TEACHER CONSOLE・修改後按「儲存」立即生效</p>
     ${isMulti() && classList().length > 1 ? `<div class="ct-class"><span>目前班級</span><select id="ctClassSel">${classList().map(c => `<option value="${esc(c.id)}"${c.id === state.curClass ? ' selected' : ''}>${esc(classLabel(c))}</option>`).join('')}</select><small>名單、公告、每日任務、加扣金幣都是改這一班</small></div>` : ''}
@@ -4070,7 +4398,7 @@ function openConsole(tab) {
   $$('[data-ct]').forEach(b => b.onclick = () => openConsole(b.dataset.ct));
   const sel = $('#ctClassSel');
   if (sel) sel.onchange = () => { switchClass(sel.value); openConsole(consoleTab); };
-  ({ basic: ctBasic, classes: ctClasses, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, tasks: ctTasks, points: ctPoints, apps: ctApps, data: ctData, notes: ctNotes })[consoleTab]($('#ctBody'));
+  ({ basic: ctBasic, classes: ctClasses, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, holiday: ctHoliday, tasks: ctTasks, points: ctPoints, apps: ctApps, data: ctData, notes: ctNotes })[consoleTab]($('#ctBody'));
 }
 
 function ctBasic(el) {
@@ -5157,6 +5485,7 @@ function ctData(el) {
       if (t !== '確定重設') return;
       stopMusic();
       localStorage.removeItem(KEY); sessionStorage.removeItem('jl-auth');
+      try { localStorage.removeItem(HOL_CACHE_KEY); } catch (e) {}
       state.music = normalizeMusic(null);
       Promise.all([idbDelPrefix('music'), idbDelPrefix(SNAP_PREFIX)]).finally(() => location.reload());
     });
@@ -5613,6 +5942,7 @@ renderAll();
 try { const raw = localStorage.getItem(KEY); if (raw && !Array.isArray(JSON.parse(raw).classes)) save(); } catch (e) {}
 tick();
 setInterval(tick, 1000);
+setTimeout(() => { refreshHolidays().catch(() => {}); }, 2500);   // 🎌 內建以外的年份從網路補
 loadWeather();
 if (!state.settings.setupDone) openSetup();
 setTimeout(() => { try { maybeAutoBackup(); } catch (_) {} }, 800);
@@ -5623,7 +5953,7 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.15.0';
+const APP_VERSION = '1.16.0';
 const APP_UPDATED = '2026-11-20';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -5637,6 +5967,18 @@ const APP_UPDATED = '2026-11-20';
  * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
  */
 const RELEASE_NOTES = [
+  { v: '1.16.0', d: '2026-11-20',
+    add: [
+      '🎌 國定假日：作息表在放假的日子會顯示「🎌 今天 行憲紀念日 放假」；整週課表、一週作業的放假日是紅色並寫上假日名稱；上方日期也會顯示假日名稱。資料是行政院人事行政總處公布的 2026、2027 年辦公日曆。',
+      '🎌 跑馬燈公告會提前提醒放假，例如「🎌 6/9（三） 端午節 放假（還有 2 天）」；放假接上週末會合成一句連假（例如「🎌 明天起 12/25（五）～12/27（日） 行憲紀念日連假 3 天」）；有補班、補課時會提醒「⚠️ …補班，要上課」。',
+      '🏫 本校自訂：在「教師控制台 → 🎌 假日」加入原住民族歲時祭儀、寒暑假、颱風假、校慶補假等放假日，或要補課的日子（可以選上星期幾的課）。'
+    ],
+    change: [
+      '放假的平日不再當成上課日：科任老師的自動換班、整週課表不會排課；一週作業的「套用到每天」「複製到下一天」會跳過放假日；放假日的公告不列「尚未完成的每日任務」。',
+      '「教師控制台 → 🎌 假日」可以設定公告提前幾天提醒（1／3／7 天，預設 3 天）、要不要提醒補班；2028 年以後的國定假日會在連上網路時自動下載（可以關掉）。'
+    ],
+    remove: [],
+    fix: [] },
   { v: '1.15.0', d: '2026-11-20',
     add: [
       '🧩 應用中心多了三個嘉蘭的預設應用（排在「📝 監考」後面）：🏝️ 嘉蘭樂學島、🧰 嘉蘭工具箱（柯北老師會持續放進新工具）、📘 儀表板教學網。',
@@ -5759,7 +6101,7 @@ if (typeof globalThis !== 'undefined') {
     Fs: globalThis.__jlFs,
     
     APP_VERSION, askConfirm, addCoins, stu, fixStudentBook, fixClassBook, normalizePrizes, redeemCoins, undoRedemption, coinRecord, coinSummary, coinRecordText, coinRecordCSV, openCoinBook, openRedeem, renderStudents, CLASS_KEYS,
-    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,
