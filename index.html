@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
 <link rel="icon" href="images/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png" sizes="180x180">
-<link rel="stylesheet" href="css/style.css?v=1.11.0">
+<link rel="stylesheet" href="css/style.css?v=1.15.0">
 </head>
 <body>
 
@@ -297,9 +297,10 @@
 
         <div id="hwPanel">
           <div class="hw-toolbar">
-            <p class="hint" style="margin:0;flex:1">今天聯絡簿寫的作業，<b>明天</b>才會出現在檢查清單。點座號循環：沒交 → 要訂正 → 完成（+1 金幣）。不是作業的項目可按「不需檢查」。</p>
+            <p class="hint" style="margin:0;flex:1">今天聯絡簿寫的作業，<b>明天</b>才會出現在檢查清單。先在下面選狀態（預設 ✓ 完成），再點座號；點錯再點一次會改回沒交。完成 +1 金幣。不是作業的項目可按「不需檢查」。</p>
             <button class="primary" id="hwAddBtn" type="button">＋ 補登作業</button>
           </div>
+          <div class="att-pick hw-pick" id="hwPick" role="group" aria-label="要標成哪一種狀態"></div>
           <div id="hwOpenList" class="hw-list"></div>
           <div id="hwDoneWrap" class="hw-done-wrap" style="display:none">
             <button type="button" class="btn" id="hwDoneToggle">查看已完成</button>
@@ -382,7 +383,8 @@
     <button data-goto="students"><span>🧑‍🤝‍🧑</span>全班夥伴</button>
     <button data-goto="dex"><span>📖</span>山林圖鑑</button>
     <button data-goto="stats"><span>📊</span>班級統計</button>
-    <button id="examNavBtn" type="button" title="監考模式：全畫面打開監考看板（不用密碼）"><span>📝</span>監考</button>
+    <span id="appPinned" class="app-pinned"><button id="examNavBtn" type="button" title="監考模式：全畫面打開監考看板（不用密碼）"><span>📝</span>監考</button></span>
+    <button id="appsNavBtn" type="button" title="應用中心：打開常用的教學網站（不用密碼）"><span>🧩</span>應用</button>
     <button id="attNavBtn" type="button" title="點名：標記今天請假、曠課、遲到的同學（需教師登入）"><span>🙋</span>點名</button>
     <button id="consoleBtn"><span>🔒</span>教師控制台</button>
     <span class="spacer"></span>
@@ -391,6 +393,7 @@
     <!-- 嘉報台（學校 Google 協作平台不允許 iframe 嵌入，所以用新分頁開啟） -->
     <button onclick="window.open('https://sites.google.com/ttct.edu.tw/jialan-weather/%E5%98%89%E5%A0%B1%E5%8F%B0','_blank')" title="開啟嘉報台氣象報告（新分頁）"><span>🌤️</span>氣象台</button>
     <button onclick="window.open('guide.html','_blank')" title="安裝與使用說明"><span>❓</span>說明</button>
+    <button id="tutorialBtn" type="button" onclick="window.open('https://classboard-teaching.netlify.app/','_blank','noopener')" title="儀表板零基礎教學網（新分頁）"><span>📘</span>教學網</button>
     <button id="cleanBtn" title="只顯示時間"><span>👁️</span>簡潔</button>
     <span id="fsTopControls">
       <button id="fullBtn" title="全螢幕"><span>⛶</span><em id="fullBtnLabel">全螢幕</em></button>
@@ -417,11 +420,13 @@
 </div>
 
 <!-- ===== 📝 監考模式（全畫面蓋住儀表板） ===== -->
+<!-- v1.14.0 起也用來打開「🧩 應用中心」裡的其他網站 -->
 <div id="examOverlay" class="exam-overlay" style="display:none" role="dialog" aria-label="監考模式">
   <div class="exam-bar">
-    <b>📝 監考模式</b>
+    <b id="examTitle">📝 監考模式</b>
     <span class="exam-url" id="examUrlLabel"></span>
     <span class="exam-spacer"></span>
+    <span class="exam-hint" id="examEmbedHint" style="display:none">畫面空白或「拒絕連線」？這個網站不允許放在這裡，請按 ↗</span>
     <button type="button" id="examReload" title="重新載入監考看板">🔄 重新載入</button>
     <a id="examNewTab" href="#" target="_blank" rel="noopener" title="監考看板在這裡顯示不出來時，用新分頁打開">↗ 用新分頁打開</a>
     <button type="button" id="examFsBtn" title="監考畫面填滿整個螢幕">⛶ 全螢幕</button>
@@ -431,8 +436,8 @@
     <iframe id="examFrame" title="監考看板" allow="fullscreen; autoplay; clipboard-write" allowfullscreen></iframe>
     <div id="examLoading" class="exam-msg" style="display:none">⏳ 監考看板載入中…</div>
     <div id="examFail" class="exam-msg exam-fail" style="display:none">
-      <b>⚠️ 監考看板沒有順利打開</b>
-      <p>可能是網路斷了，或監考看板的網址換了。請確認網路後按「🔄 再試一次」；也可以用新分頁打開。網址可以在「教師控制台 → 基本資料 → 📝 監考看板」修改。</p>
+      <b id="examFailTitle">⚠️ 監考看板沒有順利打開</b>
+      <p id="examFailHint">可能是網路斷了，或監考看板的網址換了。請確認網路後按「🔄 再試一次」；也可以用新分頁打開。網址可以在「教師控制台 → 基本資料 → 📝 監考看板」修改。</p>
       <div><button type="button" id="examRetry">🔄 再試一次</button> <a id="examFailNewTab" href="#" target="_blank" rel="noopener">↗ 用新分頁打開</a></div>
     </div>
   </div>
@@ -446,6 +451,6 @@
 
 <script src="js/species.js"></script>
 <script src="js/voiceFilter.js"></script>
-<script src="js/app.js?v=1.11.0"></script>
+<script src="js/app.js?v=1.15.0"></script>
 </body>
 </html>

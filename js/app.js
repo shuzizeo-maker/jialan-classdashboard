@@ -14,6 +14,106 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 const dateKey = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const toMin = t => { const [h, m] = String(t).split(':').map(Number); return h * 60 + (m || 0); };
 const SP = window.SPECIES, CATS = window.SPECIES_CATS, RAR = window.RARITY;
+/* ---------------- 🧩 應用中心：資料（v1.14.0） ----------------
+ * state.apps：所有班級共用、包含在備份裡；完全重設回到預設；開始新學年保留。
+ *   { id, name, emoji, url（只能 https）, desc, cat, openMode: 'embed' 在儀表板裡打開／'newtab' 新分頁, pinned, order }
+ * 監考是內建的第一個應用（id 'exam'），不能刪除；網址沿用 settings.examUrl，「顯示按鈕」＝ pinned。
+ * settings.examUrl／examBtn 仍然同步保留（舊版打開備份也看得懂）。
+ */
+const DEFAULT_EXAM_URL = 'https://exam-smart-board-v6-persistent-audio.pages.dev/';
+const APP_MAX_PINNED = 3;
+const APP_CATS = ['課堂', '評量', '班務', '其他'];
+const APP_MODES = { embed: '在儀表板裡打開', newtab: '用新分頁打開' };
+function parseExamUrl(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  if (!v) return { ok: false, reason: 'empty' };
+  let u;
+  try { u = new URL(v); } catch (e) { return { ok: false, reason: 'bad' }; }
+  if (u.protocol !== 'https:') return { ok: false, reason: 'scheme' };
+  if (!u.hostname || !u.hostname.includes('.')) return { ok: false, reason: 'bad' };
+  return { ok: true, url: u.href };
+}
+const parseAppUrl = parseExamUrl;
+function defaultExamApp(url = DEFAULT_EXAM_URL, pinned = true) {
+  return { id: 'exam', name: '監考', emoji: '📝', url, desc: '全畫面打開智慧評量監考看板', cat: '評量', openMode: 'embed', pinned: !!pinned, order: 0, builtin: true };
+}
+/* v1.15.0：嘉蘭的內建應用（排在監考後面）。可以編輯、刪除；刪掉後不會再自動加回來（state.appsSeen 記住已經加過哪些）。
+ * openMode 依各網站是否允許嵌入決定（2026-11-20 檢查）：
+ *   嘉蘭樂學島（Google 協作平台）回應 X-Frame-Options: DENY → 只能新分頁
+ *   嘉蘭工具箱（GitHub Pages）沒有禁止嵌入 → 在儀表板裡打開
+ *   儀表板教學網（Netlify）沒有禁止嵌入，但學習進度存在教學網自己的瀏覽器空間，嵌在別的網站裡會跟直接打開的進度分開 → 新分頁
+ */
+const TUTORIAL_URL = 'https://classboard-teaching.netlify.app/';
+const JL_APPS = [
+  { id: 'jl-learn', name: '嘉蘭樂學島', emoji: '🏝️', url: 'https://sites.google.com/ttct.edu.tw/jalanlearn?usp=sharing', desc: '嘉蘭國小的學習網站（Google 協作平台）', cat: '課堂', openMode: 'newtab' },
+  { id: 'jl-toolbox', name: '嘉蘭工具箱', emoji: '🧰', url: 'https://shuzizeo-maker.github.io/jialan-toolbox/', desc: '柯北老師整理的教學行政小工具，會持續增加', cat: '課堂', openMode: 'embed' },
+  { id: 'jl-guide', name: '儀表板教學網', emoji: '📘', url: TUTORIAL_URL, desc: '零基礎教學：一步一步學會用班級儀表板', cat: '其他', openMode: 'newtab' }
+];
+const BUILTIN_APP_IDS = ['exam', ...JL_APPS.map(a => a.id)];
+const jlApp = (a, order) => ({ ...a, pinned: false, order });
+const defaultApps = () => [defaultExamApp(), ...JL_APPS.map((a, i) => jlApp(a, i + 1))];
+// 把還沒加過的內建應用加進清單（插在前一個內建應用或監考後面），回傳更新後的 seen
+function addMissingBuiltins(apps, seen) {
+  const s = new Set(Array.isArray(seen) ? seen.filter(x => typeof x === 'string') : []);
+  s.add('exam');
+  JL_APPS.forEach((b, bi) => {
+    if (s.has(b.id)) return;
+    s.add(b.id);
+    // 已經有同一個網站（老師自己加過）就不重複加
+    const key = u => { try { const x = new URL(u); return (x.host + x.pathname).replace(/\/+$/, '').toLowerCase(); } catch (e) { return ''; } };
+    if (apps.some(a => a.id === b.id || key(a.url) === key(b.url))) return;
+    let at = -1;
+    for (let k = bi; k >= 0 && at < 0; k--) at = apps.findIndex(a => a.id === BUILTIN_APP_IDS[k]);
+    apps.splice(at + 1, 0, jlApp(b, 0));
+  });
+  apps.forEach((a, i) => { a.order = i; });
+  return [...s];
+}
+// 整理應用清單：補上監考、擋掉不安全的網址、最多釘選 3 個、依順序排好
+function normalizeApps(list, settings = {}) {
+  const sUrl = parseExamUrl(settings.examUrl);
+  const hasBtn = typeof settings.examBtn === 'boolean';
+  let apps;
+  if (!Array.isArray(list)) {
+    apps = [defaultExamApp(sUrl.ok ? sUrl.url : DEFAULT_EXAM_URL, settings.examBtn !== false), ...JL_APPS.map((a, i) => jlApp(a, i + 1))];
+  } else {
+    const seen = new Set();
+    apps = list.filter(a => a && typeof a === 'object').map((a, i) => {
+      const id = a.id === 'exam' ? 'exam' : String(a.id || '').trim() || 'a' + uid();
+      if (seen.has(id)) return null;
+      seen.add(id);
+      const u = parseExamUrl(a.url);
+      if (id !== 'exam' && !u.ok) return null;   // 不安全或格式不對的網址直接略過
+      const name = String(a.name || '').trim().slice(0, 20) || (id === 'exam' ? '監考' : '');
+      if (!name) return null;
+      return {
+        id, name, emoji: String(a.emoji || '').trim().slice(0, 4) || (id === 'exam' ? '📝' : '🔗'),
+        url: u.ok ? u.url : DEFAULT_EXAM_URL,
+        desc: String(a.desc || '').trim().slice(0, 60),
+        cat: String(a.cat || '').trim().slice(0, 8) || '其他',
+        openMode: a.openMode === 'newtab' ? 'newtab' : 'embed',
+        pinned: !!a.pinned, order: Number.isFinite(+a.order) ? +a.order : i,
+        ...(id === 'exam' ? { builtin: true } : {})
+      };
+    }).filter(Boolean);
+    let ex = apps.find(a => a.id === 'exam');
+    if (!ex) { ex = defaultExamApp(sUrl.ok ? sUrl.url : DEFAULT_EXAM_URL, settings.examBtn !== false); ex.order = -1; apps.push(ex); }
+    // 舊版（v1.13 以前）改過 settings 裡的監考網址或按鈕 → 以 settings 為準（新版一定讓兩邊一致）
+    if (sUrl.ok && sUrl.url !== ex.url) ex.url = sUrl.url;
+    if (hasBtn && settings.examBtn !== ex.pinned) ex.pinned = settings.examBtn;
+  }
+  apps.sort((a, b) => a.order - b.order);
+  let pins = 0;
+  apps.forEach((a, i) => { a.order = i; if (a.pinned) { pins++; if (pins > APP_MAX_PINNED) a.pinned = false; } });
+  return apps;
+}
+// 監考的網址、顯示按鈕同步回 settings（舊版相容）
+function syncExamMirror(st) {
+  const ex = (st.apps || []).find(a => a.id === 'exam');
+  if (!ex) return;
+  st.settings.examUrl = ex.url;
+  st.settings.examBtn = !!ex.pinned;
+}
 const spById = id => SP.find(s => s.id === id);
 
 /* ---------------- 資料 ---------------- */
@@ -119,7 +219,11 @@ function defaults() {
     students: {},
     forest: { level: 1, points: 0 },
     log: [],
-    ui: { widgetTask: 't1', pageTask: 't1', tasksTab: 'hw', showHwDone: false }
+    redemptions: [], coinManual: [], coinDaily: {}, // 金幣存摺（每班各自）
+    prizes: [], // 獎品清單（所有班級共用）
+    apps: defaultApps(), // 🧩 應用中心（所有班級共用）
+    appsSeen: BUILTIN_APP_IDS.slice(), // 已經自動加過的內建應用（刪掉的不會再加回來）
+    ui: { widgetTask: 't1', pageTask: 't1', tasksTab: 'hw', showHwDone: false, hwBrush: 'done' }
   };
 }
 function load() {
@@ -143,8 +247,19 @@ function normalizeState(s) {
     merged.attendance = normalizeAttendance(merged.attendance);
     if (!parseExamUrl(merged.settings.examUrl).ok) merged.settings.examUrl = d.settings.examUrl;
     merged.settings.examBtn = merged.settings.examBtn !== false;
+    // v1.14.0 🧩 應用中心：舊資料沒有 apps → 用監考設定建立（監考是第一個內建應用）
+    // 用原始資料的監考設定（沒有就不算「舊版改過」，避免預設值蓋掉應用中心的網址）
+    merged.apps = normalizeApps(s.apps, { examUrl: s.settings?.examUrl, examBtn: s.settings?.examBtn });
+    // v1.15.0：已經有應用清單的舊資料，補上還沒加過的嘉蘭內建應用（只補一次）
+    merged.appsSeen = Array.isArray(s.apps) ? addMissingBuiltins(merged.apps, s.appsSeen) : BUILTIN_APP_IDS.slice();
+    syncExamMirror(merged);
     if (!['island', 'simple'].includes(merged.settings.timerStyle)) merged.settings.timerStyle = 'island';
     if (!['random', 'slot', 'wheel', 'gacha', 'cards', 'pet', 'off'].includes(merged.settings.drawAnim)) merged.settings.drawAnim = 'random';
+    if (!HW_BRUSH_ORDER.includes(merged.ui.hwBrush)) merged.ui.hwBrush = 'done';
+    // v1.13.0 金幣存摺：舊資料補上 earned／spent、兌換紀錄等欄位
+    merged.prizes = normalizePrizes(merged.prizes);
+    fixClassBook(merged);
+    (Array.isArray(merged.classes) ? merged.classes : []).forEach(c => { if (c && c.data) fixClassBook(c.data); });
     migrateTaskAnnounce(merged);
     migrateHomework(merged);
     migrateAnnouncement(merged);
@@ -164,13 +279,14 @@ function normalizeState(s) {
  * 全部共用：校名、學年學期、作息時間、週課表（含班級標記）、臨時調課、倒數日、
  *           天氣、環境音、我的音樂、備份設定、密碼、主題。
  */
-const CLASS_KEYS = ['students', 'done', 'contact', 'homework', '_hwMigrated', 'forest', 'log', 'taskDefs', 'attendance'];
+const CLASS_KEYS = ['students', 'done', 'contact', 'homework', '_hwMigrated', 'forest', 'log', 'taskDefs', 'attendance', 'redemptions', 'coinManual', 'coinDaily'];
 const CLASS_SETTINGS = ['className', 'maxSeat', 'vacant', 'names', 'announcement'];
 const CLASS_UI = ['widgetTask', 'pageTask'];
 const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
 function freshClassData(name, { maxSeat = 20, vacant = [], taskDefs } = {}) {
   return {
     students: {}, done: {}, contact: {}, homework: [], _hwMigrated: true, attendance: {},
+    redemptions: [], coinManual: [], coinDaily: {},
     forest: { level: 1, points: 0 }, log: [],
     taskDefs: clone(taskDefs || defaults().taskDefs),
     settings: { className: String(name || ''), maxSeat: Number(maxSeat) || 20, vacant: [...(vacant || [])], names: {}, announcement: '' },
@@ -327,6 +443,9 @@ function buildAttAnnPart(info, names, showNames) {
 /* ---------------- 作業檢查（資料層） ---------------- */
 const HW_CYCLE = { miss: 'fix', fix: 'done', done: 'miss' };
 const HW_LABEL = { miss: '沒交', fix: '要訂正', done: '完成' };
+// v1.12.0：作業檢查「先選狀態，再點座號」（跟點名一樣），預設 ✓ 完成
+const HW_BRUSH_ORDER = ['done', 'fix', 'miss'];
+const HW_BRUSH = { done: { icon: '✓', label: '完成' }, fix: { icon: '✏️', label: '要訂正' }, miss: { icon: '✗', label: '沒交' } };
 const HW_ICON = { miss: '📕', fix: '✏️', done: '✅' };
 
 function migrateHomework(st) {
@@ -577,11 +696,11 @@ function setHwStatus(h, seat, next) {
   if (prev === next) return;
   // 金幣：進入「完成」+1、離開「完成」−1（與每日任務打卡相同，避免同一次循環重複給）
   if (next === 'done' && prev !== 'done') {
-    addCoins(seat, 1, '作業完成：' + h.title);
+    addCoins(seat, 1, '作業完成：' + h.title, false, 'hw');
     h.coinAwarded[seat] = true;
   } else if (prev === 'done' && next !== 'done') {
     if (h.coinAwarded[seat]) {
-      addCoins(seat, -1, '取消作業完成：' + h.title);
+      addCoins(seat, -1, '取消作業完成：' + h.title, false, 'hw');
       delete h.coinAwarded[seat];
     }
   }
@@ -598,9 +717,25 @@ function markHwAllDone(h, seats) {
 function markTaskAllDone(rec, tid, seats, taskName = '') {
   const arr = (rec[tid] ||= []);
   let n = 0;
-  seats.forEach(s => { if (!arr.includes(s)) { arr.push(s); addCoins(s, 1, '任務：' + taskName); n++; } });
+  seats.forEach(s => { if (!arr.includes(s)) { arr.push(s); addCoins(s, 1, '任務：' + taskName, false, 'task'); n++; } });
   return n;
 }
+/* 點座號：設成上方選好的狀態。
+ * 已經是這個狀態再點一次 → 改回「沒交」（點錯可以馬上改回來）；
+ * 選「✗ 沒交」時，已經是沒交就不變。金幣照 setHwStatus：進入完成 +1、離開完成 −1。 */
+function hwBrushOf() { return HW_BRUSH_ORDER.includes(state.ui.hwBrush) ? state.ui.hwBrush : 'done'; }
+function applyHwBrush(h, seat, brush = hwBrushOf()) {
+  if (!HW_BRUSH_ORDER.includes(brush)) brush = 'done';
+  const cur = hwStatusOf(h, seat);
+  const next = brush === 'miss' ? 'miss' : (cur === brush ? 'miss' : brush);
+  setHwStatus(h, seat, next);
+  return next;
+}
+function hwPickHTML() {
+  const b = hwBrushOf();
+  return HW_BRUSH_ORDER.map(k => `<button type="button" class="att-pk hw-pk hw-pk-${k}${k === b ? ' active' : ''}" data-hw-brush="${k}" aria-pressed="${k === b}">${HW_BRUSH[k].icon} ${HW_BRUSH[k].label}</button>`).join('');
+}
+// 舊的「點一下換下一個狀態」（v1.11.0 以前）；畫面已改用 applyHwBrush，保留給測試／相容
 function cycleHwSeat(h, seat) {
   const next = HW_CYCLE[hwStatusOf(h, seat)] || 'fix';
   setHwStatus(h, seat, next);
@@ -696,7 +831,7 @@ const nameOf = n => state.settings.names[n] || '';
 // 點名：今天（或指定日期）有到的座號＝名單座號扣掉請假／曠課（遲到算有到）
 const presentSeats = (dk = dateKey()) => { const seats = activeSeats(); const ab = new Set(absentSeats(state, dk, seats)); return seats.filter(n => !ab.has(n)); };
 const todayAttendance = () => attendanceOf(state, dateKey(), activeSeats());
-const stu = n => (state.students[n] ||= { coins: 0, nextAt: 10, species: [] });
+const stu = n => (state.students[n] ||= { coins: 0, nextAt: 10, species: [], earned: 0, spent: 0 });
 const todayDone = () => (state.done[dateKey()] ||= {});
 const classSpecies = () => {
   const set = new Set();
@@ -810,7 +945,7 @@ document.addEventListener('click', e => {
 });
 // 新學年：每一班的學生資料都清空，班級清單、週課表與班級標記保留
 function newYearReset() {
-  const clear = () => ({ students: {}, done: {}, contact: {}, homework: [], log: [], attendance: {}, forest: { level: 1, points: 0 } });
+  const clear = () => ({ students: {}, done: {}, contact: {}, homework: [], log: [], attendance: {}, forest: { level: 1, points: 0 }, redemptions: [], coinManual: [], coinDaily: {} });
   Object.assign(state, clear(), { ttOverrides: {} });
   Object.assign(state.settings, { names: {}, vacant: [], schoolYear: '', semester: '' });
   classList().forEach(c => {
@@ -2719,6 +2854,8 @@ function renderHomeworkPanel() {
     box.innerHTML = open.map(h => hwCardHTML(h, seats)).join('');
   }
   const done = doneHomework();
+  const pick = $('#hwPick');
+  if (pick) { pick.innerHTML = hwPickHTML(); pick.style.display = (open.length || done.length) ? '' : 'none'; }
   const hist = $('#hwDoneList');
   const wrap = $('#hwDoneWrap');
   if (wrap) wrap.style.display = done.length ? '' : 'none';
@@ -2756,7 +2893,7 @@ function hwCardHTML(h, seats) {
       </div>
     </div>
     <div class="seat-grid">${seats.map(s => seatHwBtn(h, s)).join('')}</div>
-    <p class="hw-legend">點座號循環：<span class="lg-miss">沒交</span> → <span class="lg-fix">要訂正</span> → <span class="lg-done">完成</span>（完成 +1 金幣）</p>
+    <p class="hw-legend">先選上方的狀態（<span class="lg-done">✓ 完成</span>／<span class="lg-fix">✏️ 要訂正</span>／<span class="lg-miss">✗ 沒交</span>），再點座號（完成 +1 金幣；再點一次改回沒交）</p>
   </div>`;
 }
 
@@ -2840,18 +2977,26 @@ $('#seatGrid').addEventListener('click', e => {
   const seat = +b.dataset.seat, tid = state.ui.pageTask; if (!tid) return;
   const rec = todayDone(), arr = (rec[tid] ||= []);
   const i = arr.indexOf(seat);
-  if (i >= 0) { arr.splice(i, 1); addCoins(seat, -1, '取消打卡'); }
-  else { arr.push(seat); addCoins(seat, 1, '任務：' + (state.taskDefs.find(t => t.id === tid)?.name || '')); ensureAudio(); chime(); }
+  if (i >= 0) { arr.splice(i, 1); addCoins(seat, -1, '取消打卡', false, 'task'); }
+  else { arr.push(seat); addCoins(seat, 1, '任務：' + (state.taskDefs.find(t => t.id === tid)?.name || ''), false, 'task'); ensureAudio(); chime(); }
   save(); renderDailyTaskPanel(); renderTaskWidget(); renderHeader();
   const nb = $(`#seatGrid .seat[data-seat="${seat}"]`); nb && nb.classList.add('pop');
 });
-// 作業座號循環點擊（事件委派在作業列表）
+// 作業檢查：選狀態（事件委派）
+document.addEventListener('click', e => {
+  const pk = e.target.closest('#hwPick [data-hw-brush]');
+  if (!pk) return;
+  state.ui.hwBrush = pk.dataset.hwBrush;
+  $$('#hwPick [data-hw-brush]').forEach(x => { const on = x === pk; x.classList.toggle('active', on); x.setAttribute('aria-pressed', on); });
+  save();
+});
+// 作業座號點擊：設成上方選好的狀態（事件委派在作業列表）
 document.addEventListener('click', e => {
   const b = e.target.closest('#hwOpenList .seat, #hwDoneList .seat');
   if (!b) return;
   const h = state.homework.find(x => x.id === b.dataset.hw); if (!h) return;
   const seat = +b.dataset.seat;
-  const next = cycleHwSeat(h, seat);
+  const next = applyHwBrush(h, seat);
   if (next === 'done') { ensureAudio(); chime(); }
   save(); renderHomeworkPanel(); renderTaskWidget(); renderHeader();
   const nb = $(`.seat[data-hw="${h.id}"][data-seat="${seat}"]`);
@@ -2975,13 +3120,20 @@ function openHwAddModal() {
 
 /* ---------------- 金幣 / 物種 ---------------- */
 const celebrateQueue = [];
-function addCoins(seat, delta, reason, silent) {
-  const s = stu(seat);
-  s.coins = Math.max(0, s.coins + delta);
+// kind：'hw' 作業、'task' 每日任務（存摺記每天合計）、'manual' 老師加扣分（存摺逐筆永久保留）
+// 兌換不走這裡（redeemCoins），所以兌換不會讓班級山林和物種進度倒退
+function addCoins(seat, delta, reason, silent, kind = 'manual') {
+  const s = fixStudentBook(stu(seat));
+  delta = Math.round(Number(delta) || 0);
+  if (delta < 0) delta = -Math.min(-delta, s.coins);   // 不會扣到負數；紀錄寫實際扣掉的數字
+  if (!delta) { if (!celebrateQueue.running) runCelebrations(); return 0; }
+  s.coins += delta;
+  s.earned = s.coins + s.spent;
+  recordCoin(seat, delta, reason, kind);
   if (delta > 0) {
     state.forest.points += delta;
     while (state.forest.points >= 100) { state.forest.points -= 100; state.forest.level++; celebrateQueue.push({ type: 'level', level: state.forest.level }); }
-    while (s.coins >= s.nextAt) {
+    while (s.earned >= s.nextAt) {
       s.nextAt += 10;
       const sp = discover(seat);
       if (sp) celebrateQueue.push({ type: 'species', seat, sp });
@@ -2994,6 +3146,7 @@ function addCoins(seat, delta, reason, silent) {
     state.log.length = Math.min(state.log.length, 300);
   }
   if (!celebrateQueue.running) runCelebrations();
+  return delta;
 }
 function discover(seat) {
   const s = stu(seat), have = new Set(s.species);
@@ -3416,23 +3569,233 @@ $('#noiseBtn').onclick = async () => {
 /* ---------------- 全班夥伴 ---------------- */
 function renderStudents() {
   $('#studentGrid').innerHTML = activeSeats().map(n => {
-    const s = state.students[n] || { coins: 0, nextAt: 10, species: [] };
-    const prog = 100 - (s.nextAt - s.coins) * 10;
+    const s = fixStudentBook({ coins: 0, nextAt: 10, species: [], ...(state.students[n] || {}) });
+    const prog = 100 - (s.nextAt - s.earned) * 10;
     return `<button class="s-card" data-seat="${n}">
-      <div class="s-top"><div class="s-no">${pad(n)}</div><div><div class="s-name">${esc(nameOf(n)) || n + ' 號'}</div><div class="s-coin">$ ${s.coins} 金幣・${s.species.length} 種</div></div></div>
+      <div class="s-top"><div class="s-no">${pad(n)}</div><div><div class="s-name">${esc(nameOf(n)) || n + ' 號'}</div><div class="s-coin">$ ${s.coins} 金幣・${s.species.length} 種${s.spent ? `<span class="s-spent">・已兌換 ${s.spent}</span>` : ''}</div></div></div>
       <div class="s-sp">${s.species.map(id => spById(id)?.emoji || '').join('') || '<small style="color:var(--muted);font-size:13px">還沒有發現物種</small>'}</div>
-      <div class="s-next">再 ${Math.max(0, s.nextAt - s.coins)} 金幣發現新物種</div>
+      <div class="s-next">再 ${Math.max(0, s.nextAt - s.earned)} 金幣發現新物種・點我看📒金幣紀錄</div>
       <div class="bar"><i style="width:${Math.max(0, Math.min(100, prog))}%"></i></div>
     </button>`;
   }).join('');
 }
+/* ---------------- 金幣存摺（v1.13.0） ----------------
+ * 餘額 coins ＝ 累計獲得 earned − 已兌換 spent。
+ *   earned：所有加分減掉扣分／取消打卡（不含兌換）。物種進度看 earned，所以兌換獎品不會讓進度倒退，也不會讓班級山林變小。
+ * 每一班各自保存（跟著換班級、包含在備份裡、開始新學年清空）：
+ *   redemptions 兌換紀錄（永久保留；撤銷只標記「已撤銷」並退回金幣）
+ *   coinManual  老師加扣分（永久保留）
+ *   coinDaily   每天自動得到的金幣合計 { 'YYYY-MM-DD': { 座號: { h: 作業, k: 任務 } } }（逐筆太多，改存每天合計）
+ * 所有班級共用：prizes 獎品清單 [{ id, name, cost }]
+ * 查看金幣存摺不需要密碼；兌換、撤銷要教師密碼。
+ */
+const COIN_KIND_LABEL = { hw: '作業', task: '任務', manual: '老師', redeem: '兌換', legacy: '舊版' };
+function fixStudentBook(s) {
+  if (!s || typeof s !== 'object') return s;
+  s.coins = Math.max(0, Math.round(Number(s.coins) || 0));
+  if (typeof s.spent !== 'number' || !isFinite(s.spent) || s.spent < 0) s.spent = 0;
+  if (typeof s.earned !== 'number' || !isFinite(s.earned)) {
+    // 舊資料（v1.12 以前）：目前的金幣當作累計獲得，並記下來在存摺裡顯示一行「v1.13.0 以前的金幣」
+    if (s.coins > 0 && s.legacy === undefined) s.legacy = s.coins;
+  }
+  s.earned = s.coins + s.spent;   // 一律維持 餘額 ＝ 累計獲得 − 已兌換
+  if (!Array.isArray(s.species)) s.species = [];
+  if (!(Number(s.nextAt) > 0)) s.nextAt = 10;
+  return s;
+}
+function normalizePrizes(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter(p => p && String(p.name || '').trim() && Math.round(Number(p.cost)) >= 1)
+    .map(p => ({ id: String(p.id || 'p' + uid()), name: String(p.name).trim().slice(0, 40), cost: Math.min(9999, Math.round(Number(p.cost))) }));
+}
+function fixClassBook(d) {
+  if (!d || typeof d !== 'object') return d;
+  d.redemptions = (Array.isArray(d.redemptions) ? d.redemptions : [])
+    .filter(r => r && Number(r.seat) > 0 && Number(r.cost) > 0)
+    .map(r => ({ ...r, seat: Number(r.seat), cost: Math.round(Number(r.cost)), name: String(r.name || '獎品'), id: String(r.id || 'r' + uid()), t: Number(r.t) || 0 }));
+  d.coinManual = (Array.isArray(d.coinManual) ? d.coinManual : []).filter(m => m && Number(m.seat) > 0 && Number(m.delta));
+  if (!d.coinDaily || typeof d.coinDaily !== 'object' || Array.isArray(d.coinDaily)) d.coinDaily = {};
+  if (d.students && typeof d.students === 'object') Object.values(d.students).forEach(fixStudentBook);
+  return d;
+}
+// 把每一筆金幣變動記進存摺（addCoins 會呼叫）
+function recordCoin(seat, delta, reason, kind) {
+  if (!delta) return;
+  if (kind === 'hw' || kind === 'task') {
+    const day = (state.coinDaily[dateKey()] ||= {});
+    const r = (day[seat] ||= {});
+    const k = kind === 'hw' ? 'h' : 'k';
+    r[k] = (r[k] || 0) + delta;
+    if (!r[k]) delete r[k];
+    if (!Object.keys(r).length) delete day[seat];
+  } else {
+    state.coinManual.push({ t: Date.now(), seat, delta, reason: String(reason || (delta > 0 ? '老師加分' : '老師扣分')) });
+  }
+}
+const seatWho = n => `${pad(n)} 號${nameOf(n) ? ' ' + nameOf(n) : ''}`;
+// 兌換：先檢查餘額，不夠就擋下來並說明還差多少
+function redeemCoins(seat, name, cost, prizeId = '') {
+  seat = Number(seat); name = String(name || '').trim(); cost = Math.round(Number(cost));
+  if (!activeSeats().includes(seat)) return { ok: false, msg: '請先選擇座號' };
+  if (!name) return { ok: false, msg: '請輸入獎品名稱' };
+  if (!(cost >= 1)) return { ok: false, msg: '金幣數請填 1 以上的整數' };
+  const s = fixStudentBook(stu(seat));
+  if (s.coins < cost) return { ok: false, msg: `金幣不夠，不能兌換：${seatWho(seat)} 目前只有 ${s.coins} 金幣，「${name}」要 ${cost} 金幣（還差 ${cost - s.coins} 金幣）` };
+  s.coins -= cost; s.spent += cost;
+  const r = { id: 'r' + uid(), t: Date.now(), seat, name, cost };
+  if (prizeId) r.prizeId = prizeId;
+  state.redemptions.unshift(r);
+  state.log.unshift({ t: r.t, seat, delta: -cost, reason: '🎁 兌換：' + name });
+  state.log.length = Math.min(state.log.length, 300);
+  return { ok: true, rec: r };
+}
+// 撤銷兌換：退回金幣，紀錄保留並標上「已撤銷」
+function undoRedemption(id) {
+  const r = state.redemptions.find(x => x.id === id);
+  if (!r || r.undone) return { ok: false, msg: '找不到這筆兌換，或已經撤銷過了' };
+  const s = fixStudentBook(stu(r.seat));
+  s.coins += r.cost; s.spent = Math.max(0, s.spent - r.cost);
+  r.undone = Date.now();
+  state.log.unshift({ t: r.undone, seat: r.seat, delta: r.cost, reason: '↩️ 撤銷兌換：' + r.name });
+  state.log.length = Math.min(state.log.length, 300);
+  return { ok: true, rec: r };
+}
+const hm = t => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const dk0 = t => dateKey(new Date(t));
+// 某位學生的存摺（新的在上面）
+function coinRecord(seat) {
+  seat = Number(seat);
+  const rows = [];
+  Object.entries(state.coinDaily || {}).forEach(([d, day]) => {
+    const r = day && day[seat]; if (!r) return;
+    if (r.h) rows.push({ date: d, time: '', kind: 'hw', text: '作業完成（當天合計）', delta: r.h });
+    if (r.k) rows.push({ date: d, time: '', kind: 'task', text: '每日任務（當天合計）', delta: r.k });
+  });
+  (state.coinManual || []).filter(m => m.seat === seat).forEach(m => rows.push({ date: dk0(m.t), time: hm(m.t), t: m.t, kind: 'manual', text: m.reason, delta: m.delta }));
+  (state.redemptions || []).filter(r => r.seat === seat).forEach(r => rows.push({ date: dk0(r.t), time: hm(r.t), t: r.t, kind: 'redeem', text: '🎁 兌換：' + r.name + (r.undone ? `（已撤銷，${dk0(r.undone).slice(5).replace('-', '/')} 退回金幣）` : ''), delta: -r.cost, undone: !!r.undone, id: r.id }));
+  rows.sort((a, b) => (b.date + (b.time || '99:99')).localeCompare(a.date + (a.time || '99:99')) || (b.t || 0) - (a.t || 0));
+  const s = state.students[seat];
+  if (s && s.legacy > 0) rows.push({ date: '', time: '', kind: 'legacy', text: 'v1.13.0 以前累積的金幣（舊版沒有逐筆紀錄）', delta: s.legacy });
+  return rows;
+}
+function coinSummary(seat) {
+  const s = fixStudentBook(state.students[seat] ? state.students[seat] : { coins: 0, nextAt: 10, species: [] });
+  return { coins: s.coins, earned: s.earned, spent: s.spent };
+}
+const fmtDelta = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v);
+const rowDate = r => r.date ? r.date.slice(5).replace('-', '/') + (r.time ? ' ' + r.time : '') : '—';
+function coinRecordText(seat) {
+  const c = coinSummary(seat);
+  const head = `${state.settings.className || ''} ${seatWho(seat)} 金幣存摺（${dateKey()}）\n餘額 ${c.coins}｜累計獲得 ${c.earned}｜已兌換 ${c.spent}\n`;
+  return head + coinRecord(seat).map(r => `${r.date || '—'} ${r.time || ''}\t${COIN_KIND_LABEL[r.kind]}\t${r.text}\t${r.undone ? '（0）' : fmtDelta(r.delta)}`).join('\n');
+}
+function coinRecordCSV(seat) {
+  const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const c = coinSummary(seat);
+  const lines = [['班級', '座號', '姓名', '餘額', '累計獲得', '已兌換'].join(','), [state.settings.className, seat, nameOf(seat), c.coins, c.earned, c.spent].map(q).join(','), '',
+    ['日期', '時間', '類別', '說明', '金幣', '已撤銷'].join(',')];
+  coinRecord(seat).forEach(r => lines.push([r.date, r.time, COIN_KIND_LABEL[r.kind], r.text, r.delta, r.undone ? '是' : ''].map(q).join(',')));
+  return '\ufeff' + lines.join('\r\n');
+}
+function coinRowHTML(r, canUndo = true) {
+  return `<div class="cb-row kind-${r.kind}${r.undone ? ' undone' : ''}"><span class="d">${rowDate(r)}</span><span class="k">${COIN_KIND_LABEL[r.kind]}</span><span class="t">${esc(r.text)}</span><b class="v ${r.delta > 0 ? 'up' : 'down'}">${fmtDelta(r.delta)}</b>${r.kind === 'redeem' && !r.undone && canUndo ? `<button type="button" class="btn cb-undo" data-undo="${esc(r.id)}">撤銷</button>` : ''}</div>`;
+}
+function needTeacher(after) {
+  if (isAuthed()) { after(); return true; }
+  _afterUnlock = after; teacherOpen('unlock'); return false;
+}
+// 全班夥伴 → 點學生卡片：金幣存摺（不需要密碼）
+function openCoinBook(n, tab = 'log') {
+  n = Number(n);
+  const s = state.students[n] || { coins: 0, species: [] };
+  const c = coinSummary(n);
+  const rows = coinRecord(n);
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>${pad(n)} 號 ${esc(nameOf(n))} <small class="cls-subj">金幣存摺</small></h2>
+    <div class="cb-stats"><div><small>💰 餘額</small><b id="cbBal">${c.coins}</b></div><div><small>📈 累計獲得</small><b>${c.earned}</b></div><div><small>🎁 已兌換</small><b>${c.spent}</b></div></div>
+    <p class="sub">餘額 ＝ 累計獲得 − 已兌換。兌換獎品不會讓物種進度和班級山林倒退。</p>
+    <div class="btn-row cb-actions"><button type="button" class="primary" id="cbRedeem">🎁 兌換獎品</button><button type="button" class="btn" id="cbCopy">📋 複製紀錄</button><button type="button" class="btn" id="cbCsv">⬇️ 下載 CSV</button></div>
+    <div class="cb-tabs" id="cbTabs"><button type="button" data-cb="log" class="${tab === 'log' ? 'active' : ''}">📒 金幣紀錄</button><button type="button" data-cb="dex" class="${tab === 'dex' ? 'active' : ''}">🌿 已發現物種（${s.species.length} / ${SP.length}）</button></div>
+    <div id="cbLog" class="cb-log" style="display:${tab === 'log' ? '' : 'none'}">${rows.map(r => coinRowHTML(r)).join('') || '<div class="empty">還沒有金幣紀錄。完成作業、每日任務就會得到金幣喔！</div>'}</div>
+    <div id="cbDex" class="dex-grid" style="display:${tab === 'dex' ? '' : 'none'}">${s.species.map(id => dexCard(spById(id), true)).join('') || '<div class="empty">完成任務累積金幣，就能發現新物種喔！</div>'}</div>
+    <textarea id="cbTa" class="cb-ta" readonly aria-hidden="true" tabindex="-1"></textarea>`, { wide: true });
+  $('#cbTabs').onclick = e => {
+    const b = e.target.closest('[data-cb]'); if (!b) return;
+    $$('#cbTabs [data-cb]').forEach(x => x.classList.toggle('active', x === b));
+    $('#cbLog').style.display = b.dataset.cb === 'log' ? '' : 'none';
+    $('#cbDex').style.display = b.dataset.cb === 'dex' ? '' : 'none';
+  };
+  $('#cbRedeem').onclick = () => needTeacher(() => openRedeem(n));
+  $('#cbCopy').onclick = async () => {
+    const t = coinRecordText(n); $('#cbTa').value = t;
+    toast(await copyText(t, $('#cbTa')) ? '✅ 已複製金幣紀錄，可以貼到 Word、Excel 或聯絡簿' : '⚠️ 這個瀏覽器不讓複製，請改用「⬇️ 下載 CSV」', 3500);
+  };
+  $('#cbCsv').onclick = () => {
+    const ok = downloadText(coinRecordCSV(n), `金幣存摺_${state.settings.className || '班級'}_${pad(n)}號_${dateKey()}.csv`, 'text/csv;charset=utf-8');
+    toast(ok ? '⬇️ 已下載 CSV（可用 Excel 打開）；嵌在協作平台裡沒看到檔案時，請改用「📋 複製紀錄」' : '⚠️ 下載失敗，請改用「📋 複製紀錄」', 4000);
+  };
+  $('#cbLog').onclick = e => {
+    const b = e.target.closest('[data-undo]'); if (!b) return;
+    needTeacher(() => confirmUndo(b.dataset.undo, () => openCoinBook(n)));
+  };
+}
+function confirmUndo(id, back) {
+  const r = state.redemptions.find(x => x.id === id); if (!r) return;
+  askConfirm(`確定撤銷 ${seatWho(r.seat)} 兌換「${r.name}」？會退回 ${r.cost} 金幣，這筆紀錄會保留並標上「已撤銷」。`, '撤銷並退回金幣').then(ok => {
+    if (!ok) return back && back();
+    const res = undoRedemption(id);
+    if (!res.ok) { toast(res.msg); return back && back(); }
+    save(); renderAll();
+    toast(`↩️ 已撤銷，${seatWho(r.seat)} 退回 ${r.cost} 金幣`);
+    back && back();
+  });
+}
+// 兌換畫面（彈出視窗與控制台共用）
+function redeemPanelHTML(n) {
+  const bal = n ? coinSummary(n).coins : 0;
+  const prizes = state.prizes || [];
+  return `<p class="sub rd-who">${n ? `${esc(seatWho(n))}・目前 <b>${bal}</b> 金幣` : '請先選座號'}</p>
+    <h4 class="rd-h">從獎品清單選</h4>
+    <div class="prize-grid">${prizes.length ? prizes.map(p => `<button type="button" class="prize${n && p.cost > bal ? ' short' : ''}" data-prize="${esc(p.id)}"><b>${esc(p.name)}</b><small>${p.cost} 金幣</small></button>`).join('') : '<div class="empty">還沒有獎品清單。可以在下面直接輸入，或到「教師控制台 → 加扣金幣／兌換 → 🏷️ 獎品清單」新增。</div>'}</div>
+    <h4 class="rd-h">或直接輸入</h4>
+    <div class="rd-free"><input class="mini-input rd-name" maxlength="40" placeholder="獎品名稱，例如：換座位一天"><input class="mini-input rd-cost" type="number" min="1" step="1" inputmode="numeric" placeholder="金幣"><button type="button" class="primary rd-go">🎁 兌換</button></div>
+    <div class="err rd-err"></div>`;
+}
+function bindRedeemPanel(root, n, done) {
+  const err = $('.rd-err', root);
+  const go = (name, cost, prizeId) => {
+    if (!n) { err.textContent = '請先選座號'; return; }
+    const bal = coinSummary(n).coins; cost = Math.round(Number(cost)); name = String(name || '').trim();
+    if (!name) { err.textContent = '請輸入獎品名稱'; return; }
+    if (!(cost >= 1)) { err.textContent = '金幣數請填 1 以上的整數'; return; }
+    if (bal < cost) { err.textContent = `金幣不夠，不能兌換：${seatWho(n)} 目前只有 ${bal} 金幣，「${name}」要 ${cost} 金幣（還差 ${cost - bal} 金幣）`; toast('⚠️ 金幣不夠，不能兌換'); return; }
+    err.textContent = '';
+    askConfirm(`確定讓 ${seatWho(n)} 用 ${cost} 金幣兌換「${name}」？兌換後剩 ${bal - cost} 金幣。`, '確定兌換').then(ok => {
+      if (!ok) return;
+      const res = redeemCoins(n, name, cost, prizeId);
+      if (!res.ok) { err.textContent = res.msg; return; }
+      save(); renderAll(); ensureAudio(); chime();
+      toast(`🎁 ${seatWho(n)} 兌換「${name}」，扣 ${cost} 金幣，剩 ${coinSummary(n).coins} 金幣`, 3500);
+      done && done(res.rec);
+    });
+  };
+  root.onclick = e => {
+    const p = e.target.closest('[data-prize]');
+    if (p) { const pr = (state.prizes || []).find(x => x.id === p.dataset.prize); if (pr) go(pr.name, pr.cost, pr.id); return; }
+    if (e.target.closest('.rd-go')) go($('.rd-name', root).value, $('.rd-cost', root).value, '');
+  };
+}
+function openRedeem(n) {
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>🎁 兌換獎品</h2>
+    <div id="rdBox">${redeemPanelHTML(n)}</div>
+    <div class="modal-actions"><button type="button" class="btn" id="rdBack">← 回到金幣存摺</button></div>`);
+  bindRedeemPanel($('#rdBox'), n, () => openCoinBook(n));
+  $('#rdBack').onclick = () => openCoinBook(n);
+}
 $('#studentGrid').addEventListener('click', e => {
   const c = e.target.closest('.s-card'); if (!c) return;
-  const n = +c.dataset.seat, s = state.students[n] || { coins: 0, species: [] };
-  openModal(`<button class="close" data-close>✕</button>
-    <h2>${pad(n)} 號 ${esc(nameOf(n))}</h2>
-    <p class="sub">目前 $ ${s.coins} 金幣，已發現 ${s.species.length} / ${SP.length} 種物種</p>
-    <div class="dex-grid">${s.species.map(id => dexCard(spById(id), true)).join('') || '<div class="empty">完成任務累積金幣，就能發現新物種喔！</div>'}</div>`, { wide: true });
+  openCoinBook(+c.dataset.seat);
 });
 
 /* ---------------- 山林圖鑑 ---------------- */
@@ -3592,7 +3955,7 @@ function openSetup(role) {
     const oldSchool = s.school, oldClass = s.className;
     Object.assign(s, {
       school: $('#sSchool').value.trim(), className: $('#sClass').value.trim(), schoolYear: $('#sYear').value.trim(), semester: $('#sSem').value,
-      maxSeat: max, vacant: parseVacant($('#sVac').value).filter(n => n <= max), pwHash: await hashPw(pw), setupDone: true, mode: 'single'
+      maxSeat: max, vacant: parseVacant($('#sVac').value).filter(n => n <= max), pwHash: await hashPw(pw), setupDone: true, mode: 'single', seenVersion: APP_VERSION
     });
     refreshDefaultAnnouncement(s, oldSchool, oldClass);
     setAuth();
@@ -3642,7 +4005,7 @@ function openSetupMulti() {
     if (pw !== $('#sPw2').value) return $('#sErr').textContent = '兩次密碼不一樣';
     const pwHash = await hashPw(pw);
     setupMultiClasses(list.map(r => ({ name: r.name.trim(), subject: r.subject.trim(), maxSeat: +r.max, vacant: parseVacant(r.vac).filter(n => n <= +r.max) })));
-    Object.assign(s, { school: $('#sSchool').value.trim(), schoolYear: $('#sYear').value.trim(), semester: $('#sSem').value, pwHash, setupDone: true });
+    Object.assign(s, { school: $('#sSchool').value.trim(), schoolYear: $('#sYear').value.trim(), semester: $('#sSem').value, pwHash, setupDone: true, seenVersion: APP_VERSION });
     // 每一班都用「歡迎蒞臨＋校名」，畫面上會自動接上各班自己的班名
     s.announcement = defaultAnnouncement(s.school);
     classList().forEach(c => { if (c.data && c.data.settings && !String(c.data.settings.announcement || '').trim()) c.data.settings.announcement = defaultAnnouncement(s.school); });
@@ -3698,7 +4061,7 @@ function teacherOpen(tab, focusSel) {
 let consoleTab = 'basic';
 function openConsole(tab) {
   if (tab) consoleTab = tab;
-  const tabs = [['basic', '基本資料'], ['classes', '班級管理'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['tasks', '每日任務'], ['points', '加扣金幣'], ['data', '資料管理']];
+  const tabs = [['basic', '基本資料'], ['classes', '班級管理'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['tasks', '每日任務'], ['points', '加扣金幣／兌換'], ['apps', '🧩 應用中心'], ['data', '資料管理'], ['notes', '📜 更新紀錄']];
   openModal(`<button class="close" data-close>✕</button>
     <h2>🛠️ 教師控制台</h2><p class="sub">TEACHER CONSOLE・修改後按「儲存」立即生效</p>
     ${isMulti() && classList().length > 1 ? `<div class="ct-class"><span>目前班級</span><select id="ctClassSel">${classList().map(c => `<option value="${esc(c.id)}"${c.id === state.curClass ? ' selected' : ''}>${esc(classLabel(c))}</option>`).join('')}</select><small>名單、公告、每日任務、加扣金幣都是改這一班</small></div>` : ''}
@@ -3707,7 +4070,7 @@ function openConsole(tab) {
   $$('[data-ct]').forEach(b => b.onclick = () => openConsole(b.dataset.ct));
   const sel = $('#ctClassSel');
   if (sel) sel.onchange = () => { switchClass(sel.value); openConsole(consoleTab); };
-  ({ basic: ctBasic, classes: ctClasses, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, tasks: ctTasks, points: ctPoints, data: ctData })[consoleTab]($('#ctBody'));
+  ({ basic: ctBasic, classes: ctClasses, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, tasks: ctTasks, points: ctPoints, apps: ctApps, data: ctData, notes: ctNotes })[consoleTab]($('#ctBody'));
 }
 
 function ctBasic(el) {
@@ -3742,7 +4105,8 @@ function ctBasic(el) {
     <h4 style="margin:8px 0 10px">📝 監考看板</h4>
     <div class="field"><span>監考看板網址（按底部「📝 監考」打開；只能用 https:// 開頭的網址，所有班級共用）</span>
       <div class="exam-url-row"><input id="bExamUrl" type="url" value="${esc(s.examUrl || DEFAULT_EXAM_URL)}" placeholder="${esc(DEFAULT_EXAM_URL)}" autocomplete="off"><button type="button" class="btn" id="bExamReset">恢復預設網址</button></div></div>
-    <label class="chk" style="margin:-4px 0 14px;font-size:14px"><input type="checkbox" id="bExamBtn" ${s.examBtn !== false ? 'checked' : ''}> 在最下面一排顯示「📝 監考」按鈕</label>
+    <label class="chk" style="margin:-4px 0 6px;font-size:14px"><input type="checkbox" id="bExamBtn" ${s.examBtn !== false ? 'checked' : ''}> 在最下面一排顯示「📝 監考」按鈕（📌 釘選）</label>
+    <p class="sub" style="margin:0 0 14px;font-size:12px">監考是「🧩 應用中心」的第一個內建應用；其他教學網站可以到「教師控制台 → 🧩 應用中心」新增。</p>
     <h4 style="margin:8px 0 10px">🎬 動畫效果</h4>
     <div class="row2">
       <div class="field"><span>倒數計時的畫面</span><select id="bTimerStyle">
@@ -3766,7 +4130,14 @@ function ctBasic(el) {
       $('#bExamUrl').focus();
       return;
     }
-    s.examUrl = ex.url; s.examBtn = $('#bExamBtn').checked;
+    const exA = appById('exam'), wantBtn = $('#bExamBtn').checked;
+    if (wantBtn && exA && !exA.pinned && pinnedApps().length >= APP_MAX_PINNED) {
+      $('#bErr').style.color = '';
+      $('#bErr').textContent = `⚠️ 最下面一排最多只能釘選 ${APP_MAX_PINNED} 個應用，請先到「🧩 應用中心」取消釘選其他應用`;
+      return;
+    }
+    s.examUrl = ex.url; s.examBtn = wantBtn;
+    if (exA) { exA.url = ex.url; exA.pinned = wantBtn; }
     s.timerStyle = TIMER_STYLE_OPTIONS.includes($('#bTimerStyle').value) ? $('#bTimerStyle').value : 'island';
     s.drawAnim = DRAW_ANIM_OPTIONS.includes($('#bDrawAnim').value) ? $('#bDrawAnim').value : 'random';
     const oldSchool = s.school, oldClass = s.className, oldAnn = String(s.announcement || '').trim(), annTyped = $('#bAnn').value.trim();
@@ -4086,9 +4457,16 @@ function ctTasks(el) {
   };
 }
 
+let ptMode = 'add';
 function ctPoints(el) {
+  const modes = [['add', '➕ 加扣分'], ['redeem', '🎁 兌換'], ['prizes', '🏷️ 獎品清單']];
+  el.innerHTML = `${curClassNote('金幣')}<div class="att-pick pt-mode" id="ptMode">${modes.map(([k, v]) => `<button type="button" class="att-pk${k === ptMode ? ' active' : ''}" data-pm="${k}">${v}</button>`).join('')}</div><div id="ptBody"></div>`;
+  $('#ptMode').onclick = e => { const b = e.target.closest('[data-pm]'); if (!b) return; ptMode = b.dataset.pm; ctPoints(el); };
+  const body = $('#ptBody');
+  if (ptMode === 'redeem') return ctRedeem(body);
+  if (ptMode === 'prizes') return ctPrizes(body);
   const sel = new Set();
-  el.innerHTML = `${curClassNote('金幣')}<p class="sub">選擇座號（可多選），再按要加或扣的金幣數。加分也會讓班級山林成長，並可能發現新物種。</p>
+  body.innerHTML = `<p class="sub">選擇座號（可多選），再按要加或扣的金幣數。加分也會讓班級山林成長，並可能發現新物種。加扣分會永久記在每位學生的「📒 金幣紀錄」裡（全班夥伴 → 點學生）。</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="pAll">全選</button><button class="btn" id="pNone">清除選擇</button>
       <input class="mini-input" id="pReason" placeholder="原因（例如：熱心助人）" style="flex:1;min-width:180px"></div>
     <div class="pick-grid" id="pGrid">${activeSeats().map(n => `<button data-n="${n}"><b>${pad(n)}</b>${esc(nameOf(n)) || '&nbsp;'}</button>`).join('')}</div>
@@ -4096,6 +4474,7 @@ function ctPoints(el) {
       ${[1, 2, 3, 5, 10].map(v => `<button class="btn" data-v="${v}">＋${v}</button>`).join('')}
       ${[-1, -2, -5].map(v => `<button class="btn danger" data-v="${v}">${v}</button>`).join('')}
     </div>
+    <p class="sub" style="font-size:12px">扣分會讓「累計獲得」減少；學生用金幣換獎品請改用上方的「🎁 兌換」，才會記成兌換、不會讓物種進度和班級山林倒退。</p>
     <h4 style="margin:18px 0 0">最近紀錄</h4>
     <div class="log-list" id="pLog"></div>`;
   const drawLog = () => $('#pLog').innerHTML = state.log.slice(0, 40).map(l => {
@@ -4107,12 +4486,12 @@ function ctPoints(el) {
   $('#pGrid').onclick = e => { const b = e.target.closest('button'); if (!b) return; const n = +b.dataset.n; sel.has(n) ? sel.delete(n) : sel.add(n); paint(); };
   $('#pAll').onclick = () => { activeSeats().forEach(n => sel.add(n)); paint(); };
   $('#pNone').onclick = () => { sel.clear(); paint(); };
-  $$('[data-v]', el).forEach(b => b.onclick = () => {
+  $$('[data-v]', body).forEach(b => b.onclick = () => {
     if (!sel.size) return toast('請先選擇座號');
     const v = +b.dataset.v, reason = $('#pReason').value.trim() || (v > 0 ? '老師加分' : '老師扣分');
     const hadCeleb = celebrateQueue.length;
     celebrateQueue.running = true; // 先暫停慶祝動畫，等關閉控制台後再播放
-    [...sel].forEach(n => addCoins(n, v, reason));
+    [...sel].forEach(n => addCoins(n, v, reason, false, 'manual'));
     save(); renderAll(); drawLog();
     toast(`✅ ${sel.size} 位同學 ${v > 0 ? '+' : ''}${v} 金幣`);
     if (celebrateQueue.length > hadCeleb) {
@@ -4120,6 +4499,46 @@ function ctPoints(el) {
       modalOnClose = () => { celebrateQueue.running = false; runCelebrations(); };
     } else celebrateQueue.running = false;
   });
+}
+let ptSeat = 0;
+function ctRedeem(body) {
+  if (ptSeat && !activeSeats().includes(ptSeat)) ptSeat = 0;
+  const recs = (state.redemptions || []).slice(0, 60);
+  body.innerHTML = `<p class="sub">點一位學生，再選獎品（或直接輸入名稱和金幣）。金幣不夠時不能兌換。兌換只扣這位學生的金幣，不會讓物種進度和班級山林倒退。</p>
+    <div class="pick-grid" id="rdGrid">${activeSeats().map(n => `<button data-n="${n}" class="${n === ptSeat ? 'sel' : ''}"><b>${pad(n)}</b>${esc(nameOf(n)) || '&nbsp;'}<small class="rd-bal">${coinSummary(n).coins} 幣</small></button>`).join('')}</div>
+    <div id="rdArea" class="rd-area">${redeemPanelHTML(ptSeat)}</div>
+    <h4 style="margin:18px 0 6px">這一班的兌換紀錄</h4>
+    <div class="cb-log" id="rdList">${recs.map(r => coinRowHTML({ date: dk0(r.t), time: hm(r.t), kind: 'redeem', text: `${seatWho(r.seat)}：${r.name}` + (r.undone ? '（已撤銷，已退回金幣）' : ''), delta: -r.cost, undone: !!r.undone, id: r.id })).join('') || '<div class="empty">還沒有兌換紀錄</div>'}</div>`;
+  $('#rdGrid').onclick = e => { const b = e.target.closest('[data-n]'); if (!b) return; ptSeat = +b.dataset.n; ctRedeem(body); };
+  bindRedeemPanel($('#rdArea'), ptSeat, () => ctRedeem(body));
+  $('#rdList').onclick = e => {
+    const b = e.target.closest('[data-undo]'); if (!b) return;
+    confirmUndo(b.dataset.undo, () => ctRedeem(body));
+  };
+}
+function ctPrizes(body) {
+  let rows = (state.prizes || []).map(p => ({ ...p }));
+  body.innerHTML = `<p class="sub">常用的獎品和要幾個金幣。<b>所有班級共用</b>，包含在備份裡。兌換時點一下就好；清單沒有的獎品，兌換時也可以直接輸入。</p>
+    <div class="edit-rows" id="przRows"></div>
+    <div class="modal-actions" style="justify-content:space-between"><button class="btn" id="przAdd">＋ 新增獎品</button><button class="primary" id="przSave">儲存</button></div>`;
+  const draw = () => {
+    $('#przRows').innerHTML = rows.map((p, i) => `<div class="er prize-row" data-i="${i}">
+      <input value="${esc(p.name)}" placeholder="獎品名稱，例如：🍬 糖果" maxlength="40" data-k="name">
+      <input type="number" min="1" step="1" value="${esc(p.cost)}" placeholder="金幣" data-k="cost" class="prz-cost">
+      <button data-del="${i}" title="刪除">✕</button></div>`).join('') || '<div class="empty">還沒有獎品，按「＋ 新增獎品」。</div>';
+  };
+  const sync = () => $$('#przRows .er').forEach(er => { const i = +er.dataset.i; rows[i].name = $('[data-k="name"]', er).value; rows[i].cost = $('[data-k="cost"]', er).value; });
+  draw();
+  $('#przRows').onclick = e => { const d = e.target.closest('[data-del]'); if (d) { sync(); rows.splice(+d.dataset.del, 1); draw(); } };
+  $('#przAdd').onclick = () => { sync(); rows.push({ id: 'p' + uid(), name: '', cost: '' }); draw(); const ins = $$('#przRows [data-k="name"]'); ins.length && ins[ins.length - 1].focus(); };
+  $('#przSave').onclick = () => {
+    sync();
+    const bad = rows.find(p => String(p.name).trim() && !(Math.round(Number(p.cost)) >= 1));
+    if (bad) return toast(`「${String(bad.name).trim()}」的金幣請填 1 以上的整數`);
+    state.prizes = normalizePrizes(rows);
+    save(); toast(`✅ 獎品清單已儲存（${state.prizes.length} 項）`);
+    rows = state.prizes.map(p => ({ ...p })); draw();
+  };
 }
 
 const DEFAULT_BACKUP = { auto: false, freq: 'daily', weekdays: [5], time: '15:00', lastAt: '', lastName: '', lastError: '', folderName: '', target: '' }; // target：'folder' 資料夾／'browser' 瀏覽器裡（空白＝能選資料夾就用資料夾）
@@ -4313,9 +4732,9 @@ function fmtSize(n) { n = Number(n) || 0; return n >= 1048576 ? (n / 1048576).to
 
 /* ---------------- 備份：下載、複製、貼上 ---------------- */
 // 一般下載（嵌入框沒有允許下載時，瀏覽器可能會默默擋掉，所以嵌入時會另外顯示「複製備份內容」）
-function downloadText(text, name) {
+function downloadText(text, name, type = 'application/json') {
   try {
-    const blob = new Blob([text], { type: 'application/json' });
+    const blob = new Blob([text], { type });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -4827,33 +5246,42 @@ if (typeof globalThis !== 'undefined') {
   globalThis.__jlFs = { inIframe, fsEnabled, fsElement, setZoomMode, isZoomMode, openFullscreenNewTab, updateFsButtons };
 }
 
-/* ---------------- 📝 監考模式（v1.10.0） ----------------
- * 底部「📝 監考」：用全畫面的嵌入框打開監考看板（網址可在 教師控制台 → 基本資料 修改）。
- * 打開時蓋住整個儀表板（跑馬燈、山林動物都先停下來），暫停環境音和我的音樂，關掉後再恢復。
- * 「✕ 回到儀表板」要再按一次確認，避免考試中不小心關掉；關掉後卸下看板（看板自己的設定存在看板網站裡，不會不見）。
- * 不需要教師密碼。網址是所有班級共用的設定，包含在備份裡；完全重設會回到預設網址。
+/* ---------------- 🧩 應用中心（v1.14.0；由 v1.10.0 的 📝 監考模式擴充） ----------------
+ * 最下面一排「🧩 應用」（不需要密碼）打開應用中心；釘選的應用（最多 3 個）直接出現在最下面一排。
+ * 「在儀表板裡打開」的應用用全畫面的嵌入框打開，蓋住整個儀表板（跑馬燈、山林動物都先停下來），
+ * 暫停環境音和我的音樂，關掉後再恢復。「✕ 回到儀表板」要再按一次確認；按 Esc 不會關掉。
+ * 有些網站不允許被嵌在別的網頁裡（畫面空白或顯示「拒絕連線」），這種請改成「用新分頁打開」。
  */
-const DEFAULT_EXAM_URL = 'https://exam-smart-board-v6-persistent-audio.pages.dev/';
 const EXAM_LOAD_TIMEOUT = 15000;
-function parseExamUrl(raw) {
-  const v = String(raw == null ? '' : raw).trim();
-  if (!v) return { ok: false, reason: 'empty' };
-  let u;
-  try { u = new URL(v); } catch (e) { return { ok: false, reason: 'bad' }; }
-  if (u.protocol !== 'https:') return { ok: false, reason: 'scheme' };
-  if (!u.hostname || !u.hostname.includes('.')) return { ok: false, reason: 'bad' };
-  return { ok: true, url: u.href };
-}
+const appList = () => (state.apps || []).slice().sort((a, b) => a.order - b.order);
+const appById = id => (state.apps || []).find(a => a.id === id);
+const appLabel = a => a && a.id === 'exam' ? '監考看板' : (a ? a.name : '');
 function examUrl() {
-  const r = parseExamUrl(state.settings.examUrl);
+  const ex = appById('exam');
+  const r = parseExamUrl(ex ? ex.url : state.settings.examUrl);
   return r.ok ? r.url : DEFAULT_EXAM_URL;
 }
-const exam = { open: false, amb: 'none', musicWasPlaying: false, timer: null, loaded: false };
+const exam = { open: false, amb: 'none', musicWasPlaying: false, timer: null, loaded: false, appId: '' };
 function isExamOpen() { return exam.open; }
-function renderExamBtn() {
-  const b = $('#examNavBtn');
-  if (b) b.style.display = state.settings.examBtn === false ? 'none' : '';
+function curOverlayApp() { return appById(exam.appId) || (exam.appId === 'exam' ? defaultExamApp(examUrl()) : null); }
+function pinnedApps() { return appList().filter(a => a.pinned); }
+// 最下面一排：📝 監考（固定的按鈕，沿用 v1.10 的位置）＋其他釘選的應用，依順序排
+function renderAppButtons() {
+  const box = $('#appPinned'); if (!box) return;
+  const exBtn = $('#examNavBtn');
+  $$('.app-pin-btn', box).forEach(b => b.remove());
+  appList().forEach(a => {
+    if (a.id === 'exam') { if (exBtn) { box.appendChild(exBtn); exBtn.style.display = a.pinned ? '' : 'none'; } return; }
+    if (!a.pinned) return;
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'app-pin-btn'; b.dataset.app = a.id;
+    b.title = `${a.name}：${a.desc || a.url}${a.openMode === 'newtab' ? '（新分頁）' : ''}`;
+    b.innerHTML = `<span>${esc(a.emoji)}</span>${esc(a.name)}`;
+    box.appendChild(b);
+  });
+  if (exBtn && !appById('exam')) exBtn.style.display = 'none';
 }
+const renderExamBtn = renderAppButtons;
 function examShowMsg(kind) {
   const ld = $('#examLoading'), fl = $('#examFail');
   if (ld) ld.style.display = kind === 'loading' ? '' : 'none';
@@ -4861,7 +5289,8 @@ function examShowMsg(kind) {
 }
 function examLoad() {
   const fr = $('#examFrame'); if (!fr) return;
-  const url = examUrl();
+  const app = curOverlayApp();
+  const url = app ? (parseExamUrl(app.url).ok ? parseExamUrl(app.url).url : examUrl()) : examUrl();
   exam.loaded = false;
   clearTimeout(exam.timer);
   $$('#examNewTab, #examFailNewTab').forEach(a => { a.href = url; });
@@ -4876,7 +5305,23 @@ function examLoad() {
   exam.timer = setTimeout(() => { if (exam.open && !exam.loaded) examShowMsg('fail'); }, EXAM_LOAD_TIMEOUT);
   fr.src = url;
 }
-function openExam() {
+// 用新分頁打開（瀏覽器擋掉時提示）
+function openAppNewTab(app) {
+  const url = parseExamUrl(app && app.url).ok ? parseExamUrl(app.url).url : '';
+  if (!url) { toast('⚠️ 這個應用的網址不正確，請到「教師控制台 → 🧩 應用中心」修改'); return false; }
+  let w = null;
+  try { w = window.open(url, '_blank', 'noopener'); } catch (e) { w = null; }
+  if (w === null && typeof window.open === 'function') {
+    // 有些瀏覽器加了 noopener 會回傳 null；只有真的被擋時才提示
+    toast(`↗ 已用新分頁打開「${app.name}」。沒有看到新分頁的話，請允許這個網站開啟彈出式視窗`, 4500);
+  } else toast(`↗ 已用新分頁打開「${app.name}」`);
+  return 'newtab';
+}
+// 打開一個應用：嵌入的用全畫面框；新分頁的直接開新分頁
+function openApp(id) {
+  const app = appById(id) || (id === 'exam' ? defaultExamApp(examUrl()) : null);
+  if (!app) { toast('找不到這個應用'); return false; }
+  if (app.openMode === 'newtab') return openAppNewTab(app);
   const ov = $('#examOverlay'); if (!ov || exam.open) return false;
   // 先記下並暫停聲音
   exam.amb = ambCur;
@@ -4884,24 +5329,40 @@ function openExam() {
   exam.musicWasPlaying = !!(a && musicPlayingId && !a.paused);
   if (ambCur !== 'none') { stopAmbient(); $$('#ambList li').forEach(li => li.classList.remove('on')); }
   if (exam.musicWasPlaying) { try { a.pause(); } catch (e) {} renderMusicControls(); }
-  exam.open = true;
+  exam.open = true; exam.appId = app.id;
+  const isEx = app.id === 'exam';
+  const t = $('#examTitle'); if (t) t.textContent = isEx ? '📝 監考模式' : `${app.emoji} ${app.name}`;
+  ov.setAttribute('aria-label', isEx ? '監考模式' : app.name);
+  const fr = $('#examFrame'); if (fr) fr.title = appLabel(app);
+  const rl = $('#examReload'); if (rl) rl.title = `重新載入${appLabel(app)}`;
+  const nt = $('#examNewTab'); if (nt) nt.title = `${appLabel(app)}在這裡顯示不出來時，用新分頁打開`;
+  const ld = $('#examLoading'); if (ld) ld.textContent = `⏳ ${appLabel(app)}載入中…`;
+  const ft = $('#examFailTitle'); if (ft) ft.textContent = `⚠️ ${appLabel(app)}沒有順利打開`;
+  const fh = $('#examFailHint'); if (fh) fh.textContent = isEx
+    ? '可能是網路斷了，或監考看板的網址換了。請確認網路後按「🔄 再試一次」；也可以用新分頁打開。網址可以在「教師控制台 → 基本資料 → 📝 監考看板」或「🧩 應用中心」修改。'
+    : '可能是網路斷了，或這個網站不允許放在儀表板裡（有些網站會擋）。請按「↗ 用新分頁打開」；如果每次都這樣，可以到「教師控制台 → 🧩 應用中心」把開啟方式改成「用新分頁打開」。';
+  const hint = $('#examEmbedHint'); if (hint) hint.style.display = isEx ? 'none' : '';
   document.body.classList.add('exam-open');
   ov.style.display = 'flex';
   const fsb = $('#examFsBtn'); if (fsb) fsb.style.display = fsEnabled() ? '' : 'none';
   examLoad();
   return true;
 }
+function openExam() { return openApp('exam'); }
 async function closeExam(force = false) {
   if (!exam.open) return false;
   if (!force) {
-    const yes = await askConfirm('確定結束監考、回到儀表板？（監考看板會關閉；看板自己的設定會保留在看板網站裡）', '結束監考');
+    const app = curOverlayApp();
+    const yes = exam.appId === 'exam'
+      ? await askConfirm('確定結束監考、回到儀表板？（監考看板會關閉；看板自己的設定會保留在看板網站裡）', '結束監考')
+      : await askConfirm(`確定關閉「${app ? app.name : '應用'}」、回到儀表板？`, '回到儀表板');
     if (!yes) return false;
   }
   const ov = $('#examOverlay'), fr = $('#examFrame');
   try { if (fsElement() && ov && (fsElement() === ov || ov.contains(fsElement()))) await exitFs(); } catch (e) {}
   clearTimeout(exam.timer);
   if (fr) { fr.onload = null; fr.removeAttribute('src'); }
-  exam.open = false; exam.loaded = false;
+  exam.open = false; exam.loaded = false; exam.appId = '';
   if (ov) ov.style.display = 'none';
   examShowMsg('');
   document.body.classList.remove('exam-open');
@@ -4913,14 +5374,67 @@ async function closeExam(force = false) {
   islStart();
   return true;
 }
+const closeApp = closeExam;
 function examFullscreen() {
   const ov = $('#examOverlay'); if (!ov) return;
   if (fsElement()) { exitFs(); return; }
-  reqFs(ov).catch(() => toast('這裡不能使用全螢幕（例如嵌在協作平台裡）。監考畫面已經填滿這個框，也可以按「↗ 用新分頁打開」', 4500));
+  reqFs(ov).catch(() => toast('這裡不能使用全螢幕（例如嵌在協作平台裡）。畫面已經填滿這個框，也可以按「↗ 用新分頁打開」', 4500));
 }
 function updateExamFsLabel() {
   const b = $('#examFsBtn'); if (b) b.textContent = fsElement() ? '⛶ 離開全螢幕' : '⛶ 全螢幕';
 }
+
+/* ---- 應用中心（啟動畫面，不需要密碼） ---- */
+let appCat = '全部', appQuery = '';
+function appCategories() {
+  const used = [...new Set(appList().map(a => a.cat))];
+  return ['全部', ...APP_CATS.filter(c => used.includes(c)), ...used.filter(c => !APP_CATS.includes(c))];
+}
+function appTileHTML(a) {
+  return `<button type="button" class="app-tile" data-open-app="${esc(a.id)}" data-cat="${esc(a.cat)}" data-q="${esc((a.name + ' ' + a.desc + ' ' + a.cat).toLowerCase())}">
+    <span class="at-emoji">${esc(a.emoji)}</span><b class="at-name">${esc(a.name)}</b><small class="at-desc">${esc(a.desc || a.url.replace(/^https:\/\//, ''))}</small>
+    <span class="at-tags">${a.pinned ? '<i>📌 已釘選</i>' : ''}<i>${a.openMode === 'newtab' ? '↗ 新分頁' : '🖥️ 在儀表板裡'}</i><i>${esc(a.cat)}</i></span></button>`;
+}
+function filterAppTiles() {
+  const q = appQuery.trim().toLowerCase();
+  let n = 0;
+  $$('#appGrid .app-tile').forEach(t => {
+    const show = (appCat === '全部' || t.dataset.cat === appCat) && (!q || t.dataset.q.includes(q));
+    t.style.display = show ? '' : 'none'; if (show) n++;
+  });
+  const em = $('#appEmpty'); if (em) em.style.display = n ? 'none' : '';
+  $$('#appCats [data-cat]').forEach(c => c.classList.toggle('active', c.dataset.cat === appCat));
+}
+function openAppCenter() {
+  const cats = appCategories();
+  if (!cats.includes(appCat)) appCat = '全部';
+  const list = appList();
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>🧩 應用中心</h2>
+    <p class="sub">點一下就打開。📌 釘選的應用也會出現在最下面一排（最多 ${APP_MAX_PINNED} 個；螢幕比較窄時會收進「🧩 應用」）。</p>
+    <div class="app-top">
+      <div class="app-cats att-pick" id="appCats">${cats.map(c => `<button type="button" class="att-pk${c === appCat ? ' active' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+      <input type="search" id="appSearch" class="mini-input app-search" placeholder="🔍 搜尋應用" value="${esc(appQuery)}" style="display:${list.length > 6 ? '' : 'none'}">
+    </div>
+    <div class="app-grid" id="appGrid">${list.map(appTileHTML).join('')}</div>
+    <div class="empty" id="appEmpty" style="display:none">沒有符合的應用</div>
+    <div class="modal-actions"><button type="button" class="btn" id="appManage">⚙️ 管理應用（教師）</button></div>`, { wide: true });
+  filterAppTiles();
+  $('#appCats').onclick = e => { const c = e.target.closest('[data-cat]'); if (!c) return; appCat = c.dataset.cat; filterAppTiles(); };
+  $('#appSearch').oninput = e => { appQuery = e.target.value; filterAppTiles(); };
+  $('#appGrid').onclick = e => {
+    const t = e.target.closest('[data-open-app]'); if (!t) return;
+    const app = appById(t.dataset.openApp);
+    if (app && app.openMode !== 'newtab') closeModal();
+    openApp(t.dataset.openApp);
+  };
+  $('#appManage').onclick = () => teacherOpen('apps');
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('#appPinned .app-pin-btn'); if (!b) return;
+  openApp(b.dataset.app);
+});
+$('#appsNavBtn') && ($('#appsNavBtn').onclick = () => openAppCenter());
 $('#examNavBtn') && ($('#examNavBtn').onclick = () => openExam());
 $('#examClose') && ($('#examClose').onclick = () => closeExam());
 $('#examFsBtn') && ($('#examFsBtn').onclick = () => examFullscreen());
@@ -4929,7 +5443,114 @@ $('#examRetry') && ($('#examRetry').onclick = () => examLoad());
 document.addEventListener('fullscreenchange', updateExamFsLabel);
 document.addEventListener('webkitfullscreenchange', updateExamFsLabel);
 window.addEventListener('online', () => { if (exam.open && !exam.loaded) examLoad(); });
-renderExamBtn();
+renderAppButtons();
+
+/* ---- 教師控制台 → 🧩 應用中心（管理） ---- */
+let apEditId = null;   // null：沒在編輯；''：新增；其他：編輯這個 id
+function saveApps() {
+  state.apps = normalizeApps(state.apps, {});
+  syncExamMirror(state);
+  save(); renderAppButtons();
+}
+function setAppPinned(id, on) {
+  const a = appById(id); if (!a) return { ok: false, msg: '找不到這個應用' };
+  if (on && !a.pinned && pinnedApps().length >= APP_MAX_PINNED) {
+    return { ok: false, msg: `最下面一排最多只能釘選 ${APP_MAX_PINNED} 個應用。請先把其他應用「取消釘選」，再釘選「${a.name}」。` };
+  }
+  a.pinned = !!on; saveApps();
+  return { ok: true };
+}
+function moveApp(id, dir) {
+  const list = appList(); const i = list.findIndex(a => a.id === id); const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return false;
+  [list[i], list[j]] = [list[j], list[i]];
+  list.forEach((a, k) => { a.order = k; });
+  state.apps = list; saveApps();
+  return true;
+}
+function upsertApp(data, id = '') {
+  const name = String(data.name || '').trim();
+  const u = parseExamUrl(data.url);
+  if (!name) return { ok: false, msg: '請填應用名稱' };
+  if (!u.ok) return { ok: false, msg: u.reason === 'empty' ? '請填網址' : u.reason === 'scheme' ? '網址要用 https:// 開頭（安全連線）' : '網址格式不對，請確認有沒有打錯' };
+  const wantPin = !!data.pinned;
+  const cur = id ? appById(id) : null;
+  if (wantPin && !(cur && cur.pinned) && pinnedApps().length >= APP_MAX_PINNED) {
+    return { ok: false, msg: `最下面一排最多只能釘選 ${APP_MAX_PINNED} 個應用。請先把其他應用「取消釘選」，或不要勾「釘選到最下面一排」。` };
+  }
+  const fields = {
+    name: name.slice(0, 20), emoji: String(data.emoji || '').trim().slice(0, 4) || '🔗', url: u.url,
+    desc: String(data.desc || '').trim().slice(0, 60), cat: String(data.cat || '').trim().slice(0, 8) || '其他',
+    openMode: data.openMode === 'newtab' ? 'newtab' : 'embed', pinned: wantPin
+  };
+  let app;
+  if (cur) { Object.assign(cur, fields); app = cur; }
+  else { app = { id: 'a' + uid(), ...fields, order: (state.apps || []).length }; state.apps.push(app); }
+  saveApps();
+  return { ok: true, app: appById(app.id) };
+}
+function deleteApp(id) {
+  const a = appById(id); if (!a || a.id === 'exam') return false;
+  state.apps = state.apps.filter(x => x.id !== id);
+  saveApps();
+  return true;
+}
+function ctApps(el) {
+  const list = appList();
+  const cats = [...new Set([...APP_CATS, ...list.map(a => a.cat)])];
+  const ed = apEditId === null ? null : (apEditId ? appById(apEditId) : { emoji: '🔗', name: '', url: '', desc: '', cat: '課堂', openMode: 'embed', pinned: false });
+  el.innerHTML = `<p class="sub">常用的教學網站放在這裡，按最下面一排的「🧩 應用」就能打開（不需要密碼）。<b>所有班級共用</b>，包含在備份裡；開始新學年會保留，完全重設會回到只有「📝 監考」。</p>
+    <p class="sub" style="font-size:13px">「在儀表板裡打開」：全畫面蓋住儀表板，關掉就回來。有些網站不允許被放在別的網頁裡（畫面空白或顯示「拒絕連線」），請改成「用新分頁打開」。📌 釘選的應用會出現在最下面一排，最多 ${APP_MAX_PINNED} 個。</p>
+    ${ed ? `<div class="ap-edit" id="apEdit">
+      <h4 style="margin:0 0 8px">${apEditId ? '✏️ 編輯應用' : '＋ 新增應用'}</h4>
+      <div class="ap-grid">
+        <div class="field"><span>圖示</span><input id="apEmoji" maxlength="4" value="${esc(ed.emoji)}" placeholder="🔗"></div>
+        <div class="field"><span>名稱（最下面一排會顯示，建議 2～6 個字）</span><input id="apName" maxlength="20" value="${esc(ed.name)}" placeholder="例如：Kahoot"></div>
+      </div>
+      <div class="field"><span>網址（只能用 https:// 開頭）</span><input id="apUrl" type="url" value="${esc(ed.url)}" placeholder="https://" autocomplete="off"></div>
+      <div class="field"><span>一句話說明</span><input id="apDesc" maxlength="60" value="${esc(ed.desc)}" placeholder="例如：課堂即時問答"></div>
+      <div class="ap-grid ap-grid2">
+        <div class="field"><span>分類（可以自己打新的分類）</span><input id="apCat" maxlength="8" list="apCatList" value="${esc(ed.cat)}"><datalist id="apCatList">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
+        <div class="field"><span>開啟方式</span><select id="apMode"><option value="embed"${ed.openMode !== 'newtab' ? ' selected' : ''}>🖥️ 在儀表板裡打開</option><option value="newtab"${ed.openMode === 'newtab' ? ' selected' : ''}>↗ 用新分頁打開</option></select></div>
+      </div>
+      <label class="chk" style="font-size:14px;margin:4px 0 10px"><input type="checkbox" id="apPin" ${ed.pinned ? 'checked' : ''}> 📌 釘選到最下面一排</label>
+      <div class="err" id="apErr"></div>
+      <div class="modal-actions"><button type="button" class="btn" id="apCancel">取消</button><button type="button" class="primary" id="apSave">儲存</button></div>
+    </div>` : `<div class="modal-actions" style="justify-content:flex-start;margin-top:0"><button type="button" class="primary" id="apAdd">＋ 新增應用</button></div>`}
+    <div class="ap-list" id="apList">${list.map((a, i) => `<div class="ap-row" data-id="${esc(a.id)}">
+      <span class="ap-emoji">${esc(a.emoji)}</span>
+      <div class="ap-info"><b>${esc(a.name)}</b>${a.id === 'exam' ? '<small class="ap-builtin">內建</small>' : BUILTIN_APP_IDS.includes(a.id) ? '<small class="ap-builtin">預設</small>' : ''}<small>${esc(a.cat)}・${a.openMode === 'newtab' ? '↗ 新分頁' : '🖥️ 在儀表板裡'}・${esc(a.url.replace(/^https:\/\//, ''))}</small></div>
+      <div class="ap-btns">
+        <button type="button" class="btn ap-pin${a.pinned ? ' on' : ''}" data-pin="${esc(a.id)}" title="釘選到最下面一排">${a.pinned ? '📌 已釘選' : '📌 釘選'}</button>
+        <button type="button" class="btn" data-up="${esc(a.id)}" ${i === 0 ? 'disabled' : ''} title="往前">↑</button>
+        <button type="button" class="btn" data-down="${esc(a.id)}" ${i === list.length - 1 ? 'disabled' : ''} title="往後">↓</button>
+        <button type="button" class="btn" data-test="${esc(a.id)}" title="試開一次">▶ 試開</button>
+        <button type="button" class="btn" data-edit="${esc(a.id)}">✏️ 編輯</button>
+        ${a.id === 'exam' ? '' : `<button type="button" class="btn danger" data-del="${esc(a.id)}">🗑️ 刪除</button>`}
+      </div></div>`).join('')}</div>`;
+  const redraw = () => ctApps(el);
+  if ($('#apAdd')) $('#apAdd').onclick = () => { apEditId = ''; redraw(); setTimeout(() => $('#apName') && $('#apName').focus(), 30); };
+  if ($('#apCancel')) $('#apCancel').onclick = () => { apEditId = null; redraw(); };
+  if ($('#apSave')) $('#apSave').onclick = () => {
+    const res = upsertApp({ emoji: $('#apEmoji').value, name: $('#apName').value, url: $('#apUrl').value, desc: $('#apDesc').value, cat: $('#apCat').value, openMode: $('#apMode').value, pinned: $('#apPin').checked }, apEditId);
+    if (!res.ok) { $('#apErr').textContent = '⚠️ ' + res.msg; return; }
+    toast(`✅ 已儲存「${res.app.name}」`);
+    apEditId = null; redraw();
+  };
+  $('#apList').onclick = async e => {
+    const b = e.target.closest('button'); if (!b || b.disabled) return;
+    if (b.dataset.pin) { const a = appById(b.dataset.pin); const r = setAppPinned(a.id, !a.pinned); if (!r.ok) { toast('⚠️ ' + r.msg, 4500); return; } toast(a.pinned ? `📌 已釘選「${a.name}」到最下面一排` : `已取消釘選「${a.name}」`); redraw(); return; }
+    if (b.dataset.up) { moveApp(b.dataset.up, -1); redraw(); return; }
+    if (b.dataset.down) { moveApp(b.dataset.down, 1); redraw(); return; }
+    if (b.dataset.test) { openApp(b.dataset.test); return; }
+    if (b.dataset.edit) { apEditId = b.dataset.edit; redraw(); return; }
+    if (b.dataset.del) {
+      const a = appById(b.dataset.del); if (!a) return;
+      if (!(await askConfirm(`確定刪除「${a.name}」？（只是從應用中心拿掉，不會影響那個網站）`, '刪除'))) return;
+      deleteApp(a.id); toast(`🗑️ 已刪除「${a.name}」`); if (apEditId === a.id) apEditId = null; redraw();
+    }
+  };
+}
 
 /* ---------------- 主題色 ---------------- */
 const THEMES = [
@@ -4975,7 +5596,7 @@ document.addEventListener('click', e => {
 
 /* ---------------- 啟動 ---------------- */
 function renderAll() {
-  renderHeader(); renderSchedule(); renderContact(); renderCountdowns(); renderTaskWidget(); renderCritters(); renderExamBtn(); renderTimerStyle();
+  renderHeader(); renderSchedule(); renderContact(); renderCountdowns(); renderTaskWidget(); renderCritters(); renderAppButtons(); renderTimerStyle();
   const active = $('.page.active')?.dataset.page; if (active) renderPage(active);
 }
 bindTabs('left');
@@ -5002,13 +5623,133 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.11.0';
-const APP_UPDATED = '2026-11-19';
+const APP_VERSION = '1.15.0';
+const APP_UPDATED = '2026-11-20';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
   console.info(`班級儀表板 v${APP_VERSION}（${APP_UPDATED}）`);
 })();
+/* ---------------- 更新紀錄（v1.13.0） ----------------
+ * 給老師看的白話更新說明（技術細節在 CHANGELOG.md）。每次改版在最上面加一筆：
+ *   add 新增、change 修改、remove 移除、fix 修正（沒有就留空陣列）
+ * 打開新版本時，比較「上次看過的版本」settings.seenVersion 和 APP_VERSION，
+ * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
+ */
+const RELEASE_NOTES = [
+  { v: '1.15.0', d: '2026-11-20',
+    add: [
+      '🧩 應用中心多了三個嘉蘭的預設應用（排在「📝 監考」後面）：🏝️ 嘉蘭樂學島、🧰 嘉蘭工具箱（柯北老師會持續放進新工具）、📘 儀表板教學網。',
+      '📘 教學網：最下面一排「❓ 說明」旁邊多了「📘 教學網」，用新分頁打開零基礎教學；「📜 更新紀錄」和這個視窗也有連結。'
+    ],
+    change: [
+      '嘉蘭樂學島是 Google 協作平台，不允許放在儀表板裡，所以用新分頁打開；嘉蘭工具箱在儀表板裡打開；教學網用新分頁打開（學習進度才不會分開）。',
+      '這三個預設應用沒有釘選，可以自己釘選、編輯或刪除；刪掉後不會再自動出現。'
+    ],
+    remove: [],
+    fix: [] },
+  { v: '1.14.0', d: '2026-11-19',
+    add: [
+      '🧩 應用中心：最下面一排多了「🧩 應用」，點開就能看到常用的教學網站，點一下就打開，不需要密碼。可以用分類（課堂／評量／班務／其他）篩選，應用多的時候還能搜尋。',
+      '➕ 新增自己的網站：到「教師控制台 → 🧩 應用中心」按「＋ 新增應用」，填圖示、名稱、網址（https:// 開頭）、一句話說明、分類，選「在儀表板裡打開」或「用新分頁打開」。也可以編輯、刪除、調整順序、按「▶ 試開」先試試看。',
+      '📌 釘選：最常用的應用可以釘選到最下面一排（最多 3 個）。螢幕比較窄時，釘選的按鈕會收進「🧩 應用」裡。'
+    ],
+    change: [
+      '「📝 監考」變成應用中心裡的第一個內建應用：網址和「顯示按鈕」的設定都保留，按鈕還在原來的位置。',
+      '在儀表板裡打開的網站，和監考一樣蓋住整個畫面、暫停環境音和音樂；按「✕ 回到儀表板」並確認才會關掉，按 Esc 不會關掉。',
+      '有些網站不允許放在儀表板裡（畫面空白或顯示「拒絕連線」），這時按「↗ 用新分頁打開」，或把那個應用改成「用新分頁打開」。'
+    ],
+    remove: [],
+    fix: [] },
+  { v: '1.13.0', d: '2026-11-19',
+    add: [
+      '📒 金幣存摺：到「全班夥伴」點學生，就能看到「餘額／累計獲得／已兌換」和每一筆金幣紀錄（作業、任務、老師加扣分、兌換）。學生自己查不需要密碼。',
+      '🎁 兌換獎品：在學生的金幣存摺按「🎁 兌換獎品」，或到「教師控制台 → 加扣金幣／兌換 → 🎁 兌換」。可以從獎品清單點選，也可以直接輸入獎品名稱和金幣。兌換和撤銷要教師密碼。',
+      '🏷️ 獎品清單：在「教師控制台 → 加扣金幣／兌換 → 🏷️ 獎品清單」設定常用獎品和金幣，所有班級共用。',
+      '📋 複製紀錄、⬇️ 下載 CSV：把一位學生的金幣紀錄貼到 Word／Excel，或下載成 Excel 打得開的檔案。',
+      '🆕 更新說明：以後儀表板更新時會跳出這個視窗；想再看，點畫面下方的版本號，或到「教師控制台 → 📜 更新紀錄」。'
+    ],
+    change: [
+      '兌換獎品扣金幣時，不會讓物種進度倒退，也不會讓班級山林變小（物種看的是「累計獲得」）。',
+      '金幣不夠時不能兌換，會說明還差幾個金幣。兌換錯了可以「撤銷」，金幣會退回，紀錄保留並標上「已撤銷」。',
+      '老師扣分超過學生現有的金幣時，紀錄會寫實際扣掉的數字（不會再出現扣的數字和餘額對不起來）。'
+    ],
+    remove: [],
+    fix: [] },
+  { v: '1.12.1', d: '2026-11-19',
+    add: [], change: ['螢幕比較矮時，「倒數」的 3D 島嶼會縮小一點；分頁內容放不下時可以在框內上下捲動。'], remove: [],
+    fix: ['中間的「現在時間／倒數／番茄鐘…」分頁有時變灰色、點不到，要先點「音量」才能點其他分頁。現在不會了。'] },
+  { v: '1.12.0', d: '2026-11-19',
+    add: ['作業檢查上方多了「✓ 完成」「✏️ 要訂正」「✗ 沒交」：先選狀態再點座號，預設「✓ 完成」，過關的同學點一下就好。'],
+    change: ['點錯了，同一個座號再點一次就改回「沒交」（金幣也會收回）。'], remove: ['作業檢查不再用「點一下換下一個狀態」的循環方式。'], fix: [] },
+  { v: '1.11.0', d: '2026-11-19',
+    add: ['「倒數」變成會轉動的 🏝️ 3D 島嶼，最後 10 秒變紅、時間到動物跳起來。', '抽號有五種動畫：🎰 拉霸機、🎡 幸運轉盤、🥚 扭蛋機、🃏 翻牌、🐾 班寵抽號，預設每次隨機；可按「⏭ 跳過動畫」。'],
+    change: ['「教師控制台 → 基本資料 → 🎬 動畫效果」可以把倒數改回「簡潔」、把抽號動畫關閉（舊平板比較順）。'], remove: [], fix: [] },
+  { v: '1.10.0', d: '2026-11-19',
+    add: ['最下面一排多了「📝 監考」：全畫面打開監考看板，不需要密碼；監考看板網址可在「教師控制台 → 基本資料」修改。'], change: [], remove: [], fix: [] },
+  { v: '1.9.1', d: '2026-11-19',
+    add: ['「我的音樂」新增「📂 加入資料夾」，一次加入整個資料夾的音樂。'], change: [],
+    remove: [], fix: ['嵌在 Google 協作平台裡也能上傳本機音樂，重新整理後還能播（音樂會存一份在這個瀏覽器裡）。'] },
+  { v: '1.9.0', d: '2026-11-19',
+    add: ['🙋 點名：標記病假、事假、公假、曠課、遲到；首頁顯示今日缺席，抽號和每日任務會跳過缺席的同學。'],
+    change: ['備份可以「📋 複製備份內容」和「📋 貼上備份內容還原」，嵌在協作平台裡也能備份。'], remove: [], fix: [] }
+];
+const NOTE_SECTIONS = [['add', '✨ 新增'], ['change', '🔧 修改'], ['remove', '🗑️ 移除'], ['fix', '🩹 修正']];
+function cmpVer(a, b) {
+  const x = String(a || '0').split('.').map(Number), y = String(b || '0').split('.').map(Number);
+  for (let i = 0; i < 3; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0 ? 1 : -1; }
+  return 0;
+}
+// 從上次看過的版本到現在之間的更新（沒有紀錄＝舊資料，只顯示最新一版）
+function notesBetween(seen, cur = APP_VERSION) {
+  if (!seen) { const n = RELEASE_NOTES.find(x => x.v === cur) || RELEASE_NOTES[0]; return n ? [n] : []; }
+  return RELEASE_NOTES.filter(n => cmpVer(n.v, seen) > 0 && cmpVer(n.v, cur) <= 0);
+}
+function notesHTML(list) {
+  return list.map(n => `<div class="rn-ver"><h3>v${esc(n.v)} <small>${esc(n.d)}</small></h3>${NOTE_SECTIONS.filter(([k]) => (n[k] || []).length).map(([k, label]) =>
+    `<div class="rn-sec rn-${k}"><b>${label}</b><ul>${n[k].map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>`).join('')}</div>`).join('');
+}
+let wnTimer = 0;
+const whatsNewDue = () => !!state.settings.setupDone && state.settings.seenVersion !== APP_VERSION;
+function markSeenVersion() { state.settings.seenVersion = APP_VERSION; save(); }
+// 監考中、簡潔畫面、有其他視窗開著時先不跳，過一下再看
+function maybeShowWhatsNew() {
+  clearTimeout(wnTimer);
+  if (!whatsNewDue()) return false;
+  const list = notesBetween(state.settings.seenVersion);
+  if (!list.length) { markSeenVersion(); return false; }
+  const ask = $('#askConfirm');
+  const busy = isExamOpen() || document.body.classList.contains('clean') || !$('#modal').classList.contains('hidden') || (ask && ask.style.display === 'flex') || (typeof drawAnim !== 'undefined' && drawAnim.busy);
+  if (busy) { wnTimer = setTimeout(maybeShowWhatsNew, 3000); return false; }
+  openWhatsNew(list);
+  return true;
+}
+function openWhatsNew(list) {
+  const seen = state.settings.seenVersion;
+  openModal(`<h2>🆕 這次更新了什麼</h2>
+    <p class="sub">${seen ? `從 v${esc(seen)} 更新到 v${APP_VERSION}。` : `目前版本 v${APP_VERSION}。`}看完按「知道了」，下次就不會再出現；想再看，點畫面下方的版本號，或到「教師控制台 → 📜 更新紀錄」。</p>
+    <div class="rn-list">${notesHTML(list)}</div>
+    <div class="modal-actions">${tutorialLinkHTML()}<button type="button" class="btn" id="wnAll">📜 看全部更新紀錄</button><button type="button" class="primary" id="wnOk">知道了</button></div>`, { wide: true });
+  $('#wnOk').onclick = () => { markSeenVersion(); closeModal(); };
+  $('#wnAll').onclick = () => { markSeenVersion(); openReleaseNotes(); };
+}
+function openReleaseNotes() {
+  openModal(`<button class="close" data-close>✕</button>
+    <h2>📜 更新紀錄</h2><p class="sub">目前版本 v${APP_VERSION}（${APP_UPDATED}）。新的在最上面。想從頭學怎麼用：${tutorialLinkHTML()}</p>
+    <div class="rn-list">${notesHTML(RELEASE_NOTES)}</div>`, { wide: true });
+}
+const tutorialLinkHTML = (cls = 'btn') => `<a class="${cls} tut-link" href="${TUTORIAL_URL}" target="_blank" rel="noopener">📘 儀表板教學網（新分頁）</a>`;
+function ctNotes(el) {
+  el.innerHTML = `<p class="sub tut-row">想從頭學怎麼用儀表板？${tutorialLinkHTML()}</p><p class="sub">目前版本 <b>v${APP_VERSION}</b>（${APP_UPDATED}）。每次更新後第一次打開，會跳出「🆕 這次更新了什麼」。</p><div class="rn-list">${notesHTML(RELEASE_NOTES)}</div>`;
+}
+(function bindVersionBadge() {
+  const el = document.getElementById('appVer'); if (!el) return;
+  el.classList.add('clickable'); el.setAttribute('role', 'button'); el.tabIndex = 0;
+  el.title += '・點一下看更新紀錄';
+  el.onclick = () => openReleaseNotes();
+  el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openReleaseNotes(); } };
+})();
+wnTimer = setTimeout(maybeShowWhatsNew, 1200);
 // 測試用 hook（正式畫面不依賴）
 if (typeof globalThis !== 'undefined') {
   globalThis.__jlTest = {
@@ -5017,7 +5758,8 @@ if (typeof globalThis !== 'undefined') {
     VoiceFilter: window.VoiceFilter,
     Fs: globalThis.__jlFs,
     
-    APP_VERSION, askConfirm, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    APP_VERSION, askConfirm, addCoins, stu, fixStudentBook, fixClassBook, normalizePrizes, redeemCoins, undoRedemption, coinRecord, coinSummary, coinRecordText, coinRecordCSV, openCoinBook, openRedeem, renderStudents, CLASS_KEYS,
+    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,
@@ -5025,7 +5767,7 @@ if (typeof globalThis !== 'undefined') {
     isBackupDue, lastDueSlot, nextBackupAt, backupDays, backupCfg, backupFileName, backupPayload, DEFAULT_BACKUP, maybeAutoBackup,
     folderUsable, backupTarget, saveSnapshot, listSnapshots, getSnapshot, pruneSnapshots, SNAP_KEEP, exportData, downloadText, copyText, showBackupText, restoreFromText, parseBackupText, openPasteRestore, pickBackupFolder, idbList,
     syncContactToHomework, openHomework, doneHomework, hwIsComplete, hwCounts, hwStatusOf,
-    setHwStatus, cycleHwSeat, addManualHomework, HW_CYCLE, pad, dateKey,
+    setHwStatus, cycleHwSeat, applyHwBrush, hwBrushOf, HW_BRUSH, HW_BRUSH_ORDER, renderHomeworkPanel, addManualHomework, HW_CYCLE, pad, dateKey,
     ATT, ATT_ABSENT, normalizeAttendance, pruneAttendance, setAttendance, markAllPresent, attendanceOf, absentSeats, attSummaryText, buildAttAnnPart,
     presentSeats, todayAttendance, renderAttChip, renderAll, openAttendance, todayRate, renderTaskWidget, renderDailyTaskPanel, isAuthed, setAuth, lockNow,
     ensureClasses, normalizeState, importBackupData, switchClass, checkAutoSwitch, periodAt, periodKey, addClass, deleteClass, moveClass, setClassMode,
