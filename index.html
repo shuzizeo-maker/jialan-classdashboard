@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
 <link rel="icon" href="images/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png" sizes="180x180">
-<link rel="stylesheet" href="css/style.css?v=1.17.0">
+<link rel="stylesheet" href="css/style.css?v=1.19.0">
 </head>
 <body>
 
@@ -171,8 +171,10 @@
               <div class="whl-box" id="whlNum">05:00</div>
               <div class="whl-ring" id="whlRing" role="img" aria-label="彩色轉盤倒數">
                 <div class="whl-center"><img class="whl-char" id="whlChar" alt="知心" draggable="false"><span class="whl-char-fb" id="whlCharFb" style="display:none">🧒</span></div>
+                <div class="whl-dancer" id="whlDancer" style="display:none" aria-hidden="true"><video id="whlDanceVid" muted loop playsinline preload="none" disablepictureinpicture></video><img id="whlDanceImg" alt="" draggable="false" style="display:none"></div>
               </div>
             </div>
+            <audio id="whlMusic" preload="none" loop></audio>
             <div class="btn-row presets">
               <button data-min="1">1分</button><button data-min="3">3分</button><button data-min="5">5分</button>
               <button data-min="10">10分</button><button data-min="15">15分</button><button data-min="20">20分</button>
@@ -182,6 +184,7 @@
               <button id="timerStart" class="primary">開始</button>
               <button id="timerReset">重設</button>
               <button id="timerPlus">＋1分</button>
+              <button id="whlMusicBtn" class="whl-music-btn" style="display:none" aria-pressed="true" title="跳舞音樂：開（按一下關掉）">🎵</button>
             </div>
           </div>
           <div class="tool-body hidden" data-body="pomo">
@@ -457,6 +460,6 @@
 
 <script src="js/species.js"></script>
 <script src="js/voiceFilter.js"></script>
-<script src="js/app.js?v=1.17.0"></script>
+<script src="js/app.js?v=1.19.0"></script>
 </body>
 </html>

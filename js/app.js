@@ -489,6 +489,7 @@ function defaults() {
       examBtn: true, // 底部是否顯示「📝 監考」
       timerStyle: 'island', // 計時器畫面：island＝🏝️ 3D 島嶼、simple＝簡潔、wheel＝🎡 彩色轉盤（v1.17.0）
       timerChar: '',        // 🎡 轉盤中間的角色：''＝知心、'custom'＝老師上傳（圖片在 IndexedDB）
+      danceMusic: true, danceMusicVol: 60, // 🎵 跳舞音樂（v1.19.0）：彩色轉盤計時中播放；音量 0～100
       drawAnim: 'random', // 抽號動畫：random、slot、wheel、gacha、cards、pet、off
       holShow: true, holAnnDays: 3, holAnnWork: true, holOnline: true, // 🎌 國定假日：顯示、公告提前幾天、提醒補班、自動從網路更新
       loc: { name: '臺東縣 金峰鄉', lat: 22.60, lon: 120.96, source: 'openmeteo', cwaKey: '', cwaDataset: 'F-D0047-037', cwaTown: '金峰鄉' }
@@ -554,6 +555,8 @@ function normalizeState(s) {
     syncExamMirror(merged);
     if (!['island', 'simple', 'wheel'].includes(merged.settings.timerStyle)) merged.settings.timerStyle = 'island';
     if (merged.settings.timerChar !== 'custom') merged.settings.timerChar = '';
+    merged.settings.danceMusic = merged.settings.danceMusic !== false;
+    { const v = Math.round(Number(merged.settings.danceMusicVol)); merged.settings.danceMusicVol = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 60; }
     if (!['random', 'slot', 'wheel', 'gacha', 'cards', 'pet', 'off'].includes(merged.settings.drawAnim)) merged.settings.drawAnim = 'random';
     if (!HW_BRUSH_ORDER.includes(merged.ui.hwBrush)) merged.ui.hwBrush = 'done';
     // v1.16.0 🎌 假日
@@ -2234,7 +2237,11 @@ function playAmbient(id) {
 function renderAmbient() {
   $('#ambList').innerHTML = AMB.map(a => `<li data-id="${a.id}" class="${a.id === ambCur && !musicPlayingId ? 'on' : ''}"><span class="ai">${a.icon}</span><div><b>${a.name}</b><small>${a.sub}</small></div></li>`).join('');
 }
-$('#ambList').addEventListener('click', e => { const li = e.target.closest('li'); if (li) playAmbient(li.dataset.id); });
+$('#ambList').addEventListener('click', e => {
+  const li = e.target.closest('li'); if (!li) return;
+  if (li.dataset.id !== 'none') dmUserAudio(); else dm.restoreAmb = 'none';   // 老師自己選了環境音 → 這一輪倒數讓給老師
+  playAmbient(li.dataset.id);
+});
 $('#ambVol').addEventListener('input', e => {
   if (ambGain) ambGain.gain.value = e.target.value / 100 * .6;
   const a = musicAudio(); if (a) a.volume = musicVolume();
@@ -2384,6 +2391,7 @@ function revokeMusicUrl() {
 }
 // 開始播自己的音樂：關掉內建環境音
 function musicTakeOver() {
+  dmUserAudio();   // 老師自己播「我的音樂」→ 跳舞音樂讓開（恢復播放時不算）
   stopAmbient(); ambCur = 'none';
   $$('#ambList li').forEach(li => li.classList.remove('on'));
 }
@@ -2775,8 +2783,9 @@ function showTimer() {
   $('#timerStart').textContent = timer.running ? '暫停' : '開始';
   updateIslPill();
   updateWheel();
+  dmSync();
 }
-function timerSet(sec) { timer.total = timer.left = Math.max(0, sec); timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.remove('ringing'); isl.done = 0; isl.lastSec = -1; whl.done = false; showTimer(); }
+function timerSet(sec) { dmStop(false); timer.total = timer.left = Math.max(0, sec); timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.remove('ringing'); isl.done = 0; isl.lastSec = -1; whl.done = false; whl.started = false; showTimer(); }
 $$('.presets button').forEach(b => b.onclick = () => timerSet(b.dataset.min * 60));
 $('#timerPlus').onclick = () => { timer.left += 60; if (timer.running) timer.end += 60000; showTimer(); };
 $('#timerMinus').onclick = () => { timer.left = Math.max(0, timer.left - 60); if (timer.running) timer.end -= 60000; showTimer(); };
@@ -2789,7 +2798,7 @@ $('#timerStart').onclick = () => {
   timer.running = true; timer.end = Date.now() + timer.left * 1000;
   timer.iv = setInterval(() => {
     timer.left = (timer.end - Date.now()) / 1000;
-    if (timer.left <= 0) { timer.left = 0; timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.add('ringing'); beep(4); toast('⏰ 時間到！'); islFinish(); whlFinish(); }
+    if (timer.left <= 0) { timer.left = 0; timer.running = false; clearInterval(timer.iv); dmStop(true); $('#timerDisp').classList.add('ringing'); beep(4); toast('⏰ 時間到！'); islFinish(); whlFinish(); }
     else if (timer.left <= 10) islTickSound(Math.ceil(timer.left));
     showTimer();
   }, 200);
@@ -2812,7 +2821,9 @@ function renderTimerStyle() {
   if (wrap) wrap.style.display = on ? '' : 'none';
   if (ww) ww.style.display = wh ? '' : 'none';
   updateIslPill();
-  if (wh) updateWheel();
+  if (wh) updateWheel(); else whlStopDance();
+  dmSync();
+  const mb = $('#whlMusicBtn'); if (mb) { mb.style.display = wh ? '' : 'none'; dmRenderBtn(); }
   if (on) islStart();
 }
 function islVisible() {
@@ -3058,6 +3069,7 @@ function islStart() {
   isl.raf = requestAnimationFrame(islFrame);
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) islStart(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) whlStopDance(); else if (wheelMode()) updateWheel(); });
 
 /* ---------------- 🎡 彩色轉盤倒數（v1.17.0） ----------------
  * 計時器的第三種畫面：一圈 20 格彩虹色塊（每格一個白點）、外圈一圈小燈泡、上方數字框、中間是角色「知心」。
@@ -3133,7 +3145,200 @@ function updateWheel() {
   wrap.classList.toggle('run', timer.running);
   wrap.classList.toggle('warn', timer.running && l <= 10 && l > 0);
   wrap.classList.toggle('done', done);
+  if (timer.running) whl.started = true;   // 開始過（暫停時停在當下的動作；換時間、重設、時間到才回到半身照）
+  if (done || timer.left <= 0) whl.started = false;
+  whlDance(done ? 'done' : timer.running ? 'run' : whl.started ? 'pause' : 'idle');
 }
+/* ---- 💃 知心跳舞（v1.18.0） ----
+ * 計時中：知心站在中間的圓上跳舞（身體可以超出轉盤上緣，數字框上面已經預留空間，不會疊到）。
+ * 暫停：停在當下的動作（WebM 暫停；動態 WebP 換成靜止畫面）。還沒開始：圓裡面是知心的半身照。時間到：半身照跳一跳＋鈴聲。
+ * 用哪一種：
+ *   Chrome、Edge、Firefox（電腦、Android）→ 透明 WebM（VP9 alpha，24fps）
+ *   iPad、iPhone、Mac 的 Safari → 動態 WebP（Safari 播 WebM 時透明背景會變黑）；WebM 播不出來時也改用它
+ *   不跳舞（只顯示半身照）：系統「減少動態效果」、老師換了自己的圖片、兩種檔案都打不開
+ * 看不到時（切到別的工具、別的頁面、監考、瀏覽器在背景）會暫停，不浪費電。檔案只有第一次要跳舞時才下載。
+ */
+const WHL_DANCE = { webm: 'images/zhixin-dance.webm', webp: 'images/zhixin-dance.webp', still: 'images/zhixin-dance-still.webp' };
+function whlIsAppleWebKit() {
+  const ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  if (/Macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1) return true;   // iPadOS 偽裝成 Mac
+  return /Safari/.test(ua) && /Macintosh/.test(ua) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS|OPR/.test(ua);
+}
+function whlDanceKind() {
+  if (whl.danceBroken === 'all' || state.settings.timerChar === 'custom' || prefersReducedMotion()) return 'none';
+  if (whl.danceBroken !== 'video' && !whlIsAppleWebKit()) {
+    let ok = '';
+    try { const v = document.createElement('video'); ok = v.canPlayType ? v.canPlayType('video/webm; codecs="vp9"') : ''; } catch (e) {}
+    if (ok === 'probably' || ok === 'maybe') return 'video';
+  }
+  return 'webp';
+}
+function whlVisible() {
+  if (!wheelMode() || document.hidden) return false;
+  if (typeof isExamOpen === 'function' && isExamOpen()) return false;
+  const body = $('.tool-body[data-body="timer"]');
+  if (!body || body.classList.contains('hidden')) return false;
+  const page = body.closest('.page');
+  if (page && !page.classList.contains('active')) return false;
+  return !document.body.classList.contains('clean');
+}
+function whlStopDance() {
+  const v = $('#whlDanceVid'); if (v) { try { v.pause(); } catch (e) {} }
+}
+function whlDance(mode) {
+  const box = $('#whlDancer'), v = $('#whlDanceVid'), img = $('#whlDanceImg'), wrap = $('#whlWrap'), center = $('#whlRing .whl-center');
+  if (!box || !v || !img) return;
+  const kind = whlDanceKind();
+  if (wrap) wrap.classList.toggle('no-dance', kind === 'none');
+  const show = kind !== 'none' && (mode === 'run' || mode === 'pause');
+  whl.danceMode = show ? (mode === 'run' ? 'dance' : 'freeze') : 'off';
+  box.style.display = show ? '' : 'none';
+  if (center) center.style.visibility = show ? 'hidden' : '';
+  if (!show) { whlStopDance(); return; }
+  const play = mode === 'run' && whlVisible();
+  if (kind === 'video') {
+    img.style.display = 'none'; v.style.display = '';
+    if (!v.getAttribute('src')) {
+      v.muted = true; v.loop = true; v.setAttribute('playsinline', ''); v.setAttribute('poster', WHL_DANCE.still);
+      v.onerror = () => { whl.danceBroken = 'video'; whlStopDance(); whlDance(whl.danceMode === 'dance' ? 'run' : 'pause'); };
+      v.setAttribute('src', WHL_DANCE.webm);
+    }
+    if (play) { if (v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); } }
+    else whlStopDance();
+    whl.danceSrc = WHL_DANCE.webm;
+  } else {
+    whlStopDance(); v.style.display = 'none'; img.style.display = '';
+    img.onerror = () => { if (img.getAttribute('src') === WHL_DANCE.webp) { whl.danceBroken = 'all'; whlDance('idle'); } };
+    const want = play ? WHL_DANCE.webp : WHL_DANCE.still;
+    if (img.getAttribute('src') !== want) img.setAttribute('src', want);
+    whl.danceSrc = want;
+  }
+}
+/* ---------------- 🎵 跳舞音樂（v1.19.0） ----------------
+ * 🎡 彩色轉盤「計時中」重複播放；按「暫停」停在原來的位置，再按「開始」接著播；
+ * 時間到：先停音樂（回到開頭）再響鈴，鈴聲聽得清楚；按「重設」或換時間也回到開頭。
+ * 音樂跟著「轉盤在計時」，不是跟著跳舞：老師換成自己的圖片、系統「減少動態效果」、跳舞檔案打不開時照樣播
+ *   （音樂不是動態效果；不想要就關掉「🎵 跳舞音樂」或按計時器下面的 🎵）。
+ * 監考時暫停，關掉監考後倒數還在跑就接著播。切到別的工具、瀏覽器在背景時照常播（倒數還在進行）。
+ * 和其他聲音不打架：開始播時關掉環境音、暫停「我的音樂」，音樂停下來後（暫停、重設、時間到的鈴聲響完）再恢復原本的。
+ *   計時中老師自己點了環境音或播「我的音樂」→ 這一輪倒數就讓給老師（不再搶回來），換時間、重設或時間到後恢復。
+ * 由按「開始」觸發，瀏覽器允許播放；被擋住時提醒一次。音樂檔第一次開始計時才下載。
+ */
+const DM_SRC = 'sounds/dance-music.mp3';
+const DM_RESTORE_MS = 3500;   // 時間到：鈴聲（約 3 秒）響完再恢復環境音／我的音樂
+const dm = { playing: false, yielded: false, restoreAmb: 'none', restoreMusic: false, restoreTimer: 0, restoring: false, blocked: false, blockedWait: false, broken: false, pv: null, pvTimer: 0 };
+function dmAudio() { return $('#whlMusic'); }
+function dmVol() { const v = Number(state.settings.danceMusicVol); return Math.max(0, Math.min(100, Number.isFinite(v) ? v : 60)) / 100; }
+function dmWanted() {
+  return wheelMode() && timer.running && !whl.done && state.settings.danceMusic !== false && !dm.yielded && !dm.broken && !dm.blockedWait && !(typeof isExamOpen === 'function' && isExamOpen());
+}
+function dmDuckOthers() {
+  clearTimeout(dm.restoreTimer); dm.restoreTimer = 0;
+  if (ambCur !== 'none') { dm.restoreAmb = ambCur; stopAmbient(); ambCur = 'none'; $$('#ambList li').forEach(li => li.classList.remove('on')); }
+  const a = musicAudio();
+  if (a && musicPlayingId && !a.paused) { dm.restoreMusic = true; try { a.pause(); } catch (e) {} renderMusicControls(); }
+}
+function dmRestore() {
+  clearTimeout(dm.restoreTimer); dm.restoreTimer = 0;
+  if (typeof isExamOpen === 'function' && isExamOpen()) return;   // 監考中先不恢復，關掉監考後再說
+  const amb = dm.restoreAmb, mus = dm.restoreMusic;
+  dm.restoreAmb = 'none'; dm.restoreMusic = false;
+  dm.restoring = true;
+  try {
+    if (amb !== 'none') playAmbient(amb);
+    else if (mus) { const a = musicAudio(); if (a && musicPlayingId && a.getAttribute('src')) { musicTakeOver(); safePlay(a); } }
+  } finally { dm.restoring = false; }
+}
+function dmPause() {
+  const a = dmAudio(); dm.playing = false;
+  if (a) { try { a.pause(); } catch (e) {} }
+}
+function dmStop(done) {   // 時間到（done）／重設、換時間：停下來並回到開頭
+  dmPause(); dm.yielded = false;
+  const a = dmAudio(); if (a && a.getAttribute('src')) { try { a.currentTime = 0; } catch (e) {} }
+  clearTimeout(dm.restoreTimer); dm.restoreTimer = 0;
+  if (done && (dm.restoreAmb !== 'none' || dm.restoreMusic)) dm.restoreTimer = setTimeout(() => { dm.restoreTimer = 0; if (!dmWanted()) dmRestore(); }, DM_RESTORE_MS);
+}
+function dmSync() {
+  const a = dmAudio(); if (!a) return;
+  if (dmWanted()) {
+    a.volume = dmVol();
+    if (dm.playing && !a.paused) return;
+    if (!a.getAttribute('src')) {
+      a.loop = true; a.preload = 'auto';
+      a.onerror = () => { dm.broken = true; dmPause(); dmRestore(); toast('⚠️ 跳舞音樂載入失敗（可能沒有網路），倒數照常進行'); };
+      a.setAttribute('src', DM_SRC);
+    }
+    dmDuckOthers();
+    dm.playing = true;
+    let p; try { p = a.play(); } catch (e) { p = Promise.reject(e); }
+    if (p && typeof p.catch === 'function') p.catch(e => {
+      if (!dm.playing) return;            // 已經被暫停了（例如馬上按了暫停）
+      dm.playing = false; dmRestore();
+      if (e && e.name === 'NotAllowedError') dm.blockedWait = true;   // 等老師下一次按（🎵、暫停再開始），不要每 0.2 秒重試
+      if (e && e.name === 'NotAllowedError' && !dm.blocked) { dm.blocked = true; toast('🎵 瀏覽器擋住了跳舞音樂，按一下計時器下面的 🎵 就會播放', 4000); }
+      dmRenderBtn();
+    });
+  } else {
+    if (dm.playing || !a.paused) dmPause();
+    if (!timer.running) dm.blockedWait = false;
+    if (!dm.restoreTimer && (dm.restoreAmb !== 'none' || dm.restoreMusic)) dmRestore();
+  }
+  dmRenderBtn();
+}
+function dmUserAudio() {   // 老師自己開了環境音或「我的音樂」
+  if (dm.restoring) return;
+  clearTimeout(dm.restoreTimer); dm.restoreTimer = 0;
+  dm.restoreAmb = 'none'; dm.restoreMusic = false;
+  if (wheelMode() && (timer.running || whl.started) && !whl.done) dm.yielded = true;
+  if (dm.playing) dmPause();
+  dmRenderBtn();
+}
+function dmRenderBtn() {
+  const b = $('#whlMusicBtn'); if (!b) return;
+  const on = state.settings.danceMusic !== false;
+  b.textContent = on ? '🎵' : '🔇';
+  b.classList.toggle('off', !on);
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  b.title = on ? (dm.yielded && timer.running ? '跳舞音樂：這一輪讓給您播的音樂（按一下改回跳舞音樂）' : '跳舞音樂：開（按一下關掉）') : '跳舞音樂：關（按一下打開）';
+  b.setAttribute('aria-label', b.title);
+}
+function dmToggle(on = state.settings.danceMusic === false) {
+  state.settings.danceMusic = !!on; save();
+  dm.blockedWait = false;
+  if (on) { dm.yielded = false; dm.blocked = false; dm.broken = false; }
+  dmSync();
+  toast(on ? '🎵 跳舞音樂：開' : '🔇 跳舞音樂：關');
+}
+function dmSetVol(v) {
+  state.settings.danceMusicVol = Math.max(0, Math.min(100, Math.round(Number(v) || 0))); save();
+  const a = dmAudio(); if (a) a.volume = dmVol();
+  if (dm.pv) dm.pv.volume = dmVol();
+}
+function dmPreview() {   // 教師控制台的「▶ 試聽」：播 8 秒（計時中直接聽轉盤的就好）
+  if (dm.pv) return dmStopPreview();
+  if (dm.playing) { toast('🎵 正在播放跳舞音樂'); return; }
+  const a = document.createElement('audio'); a.src = DM_SRC; a.volume = dmVol(); dm.pv = a;
+  let p; try { p = a.play(); } catch (e) { p = Promise.reject(e); }
+  if (p && typeof p.catch === 'function') p.catch(() => { dmStopPreview(); toast('⚠️ 播放不出來，請確認音量或網路'); });
+  dm.pvTimer = setTimeout(dmStopPreview, 8000);
+  const b = $('#bDmTry'); if (b) b.textContent = '⏹ 停止';
+}
+function dmStopPreview() {
+  clearTimeout(dm.pvTimer); dm.pvTimer = 0;
+  if (dm.pv) { try { dm.pv.pause(); } catch (e) {} dm.pv = null; }
+  const b = $('#bDmTry'); if (b) b.textContent = '▶ 試聽';
+}
+function dmBtnClick() {
+  // 這一輪讓給老師的音樂時，按 🎵 是「改回跳舞音樂」；其他時候是開／關
+  // 被瀏覽器擋住時，按 🎵 是「再播一次」（老師按的，瀏覽器會允許）
+  if ((dm.yielded || dm.blockedWait) && state.settings.danceMusic !== false && wheelMode() && timer.running) {
+    const was = dm.yielded; dm.yielded = false; dm.blockedWait = false; dmSync(); if (was) toast('🎵 改回跳舞音樂'); return;
+  }
+  dmToggle();
+}
+{ const b = $('#whlMusicBtn'); if (b) b.onclick = () => dmBtnClick(); }
 function whlFinish() {
   if (!wheelMode()) return;
   whl.done = true;
@@ -3154,6 +3359,7 @@ function applyWheelChar() {
   if (img.getAttribute('src') !== src) img.setAttribute('src', src);
   img.alt = src === WHL_DEFAULT_IMG ? '知心' : '自訂角色';
   const pv = $('#bWhlPreview'); if (pv) pv.setAttribute('src', src);
+  if (whl.built && wheelMode()) updateWheel();
   const st = $('#bWhlState'); if (st) st.textContent = whlCharStateText();
 }
 function whlCharStateText() {
@@ -4609,9 +4815,18 @@ function ctBasic(el) {
         <small>建議用去背的 PNG，人物在中間；會自動縮小，只存在這台電腦的瀏覽器裡（不在備份檔裡）。</small></div>
       <input type="file" id="bWhlFile" accept="image/*" style="display:none">
     </div>
+    <div class="whl-set dm-set" id="bDmSet">
+      <div class="whl-set-info"><b>🎵 跳舞音樂</b>
+        <label class="chk" style="font-size:14px"><input type="checkbox" id="bDmOn" ${s.danceMusic !== false ? 'checked' : ''}> 彩色轉盤計時中播放跳舞音樂（重複播放；暫停時停住，時間到先停音樂再響鈴）</label>
+        <div class="dm-vol"><span>音量</span><input type="range" id="bDmVol" min="0" max="100" step="5" value="${Number(s.danceMusicVol ?? 60)}" aria-label="跳舞音樂音量"><b id="bDmVolV">${Number(s.danceMusicVol ?? 60)}%</b><button type="button" class="btn" id="bDmTry">▶ 試聽</button></div>
+        <small>改了馬上生效（不用按儲存）。播放時會先關掉環境音、暫停「我的音樂」，停下來後再恢復。計時器下面的 🎵 按鈕也可以快速開關。</small></div>
+    </div>
     <div class="err" id="bErr"></div>
     <div class="modal-actions"><button class="primary" id="bSave">儲存</button></div>`;
   $('#bWhlUp').onclick = () => $('#bWhlFile').click();
+  $('#bDmOn').onchange = e => dmToggle(e.target.checked);
+  $('#bDmVol').oninput = e => { dmSetVol(e.target.value); $('#bDmVolV').textContent = state.settings.danceMusicVol + '%'; };
+  $('#bDmTry').onclick = () => dmPreview();
   $('#bWhlFile').onchange = async e => {
     const f = e.target.files && e.target.files[0]; e.target.value = '';
     if (!f) return;
@@ -5835,6 +6050,7 @@ function openApp(id) {
   if (ambCur !== 'none') { stopAmbient(); $$('#ambList li').forEach(li => li.classList.remove('on')); }
   if (exam.musicWasPlaying) { try { a.pause(); } catch (e) {} renderMusicControls(); }
   exam.open = true; exam.appId = app.id;
+  dmSync();   // 跳舞音樂暫停（關掉監考後，倒數還在跑就接著播）
   const isEx = app.id === 'exam';
   const t = $('#examTitle'); if (t) t.textContent = isEx ? '📝 監考模式' : `${app.emoji} ${app.name}`;
   ov.setAttribute('aria-label', isEx ? '監考模式' : app.name);
@@ -5872,8 +6088,12 @@ async function closeExam(force = false) {
   examShowMsg('');
   document.body.classList.remove('exam-open');
   // 恢復聲音
-  if (exam.amb && exam.amb !== 'none') playAmbient(exam.amb);
-  else if (exam.musicWasPlaying) { const a = musicAudio(); if (a && musicPlayingId) { musicTakeOver(); safePlay(a); } }
+  dm.restoring = true;
+  try {
+    if (exam.amb && exam.amb !== 'none') playAmbient(exam.amb);
+    else if (exam.musicWasPlaying) { const a = musicAudio(); if (a && musicPlayingId) { musicTakeOver(); safePlay(a); } }
+  } finally { dm.restoring = false; }
+  dmSync();
   renderAmbient(); renderMusicControls();
   exam.amb = 'none'; exam.musicWasPlaying = false;
   islStart();
@@ -6130,7 +6350,7 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.17.0';
+const APP_VERSION = '1.19.0';
 const APP_UPDATED = '2026-11-23';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -6144,6 +6364,27 @@ const APP_UPDATED = '2026-11-23';
  * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
  */
 const RELEASE_NOTES = [
+  { v: '1.19.0', d: '2026-11-23',
+    add: [
+      '🎵 彩色轉盤倒數時，會一邊跳舞一邊播放跳舞音樂（重複播放）。按「暫停」音樂停住，再按「開始」接著播；時間到時先停音樂再響鈴，鈴聲聽得很清楚。',
+      '計時器下面多了 🎵 按鈕，按一下就能關掉／打開跳舞音樂；教師控制台 → 基本資料 → 🎬 動畫效果 可以調整音量、試聽。'
+    ],
+    change: [
+      '播放跳舞音樂時，環境音和「我的音樂」會先停下來，音樂停了以後自動恢復；監考時不播放。計時中如果您自己打開環境音或「我的音樂」，這一輪就改播您選的。',
+      '中間換成自己的圖片、或系統設定「減少動態效果」時，知心不跳舞，但音樂照樣播（不想要可以按 🎵 關掉）。'
+    ],
+    remove: [],
+    fix: [] },
+  { v: '1.18.0', d: '2026-11-23',
+    add: [
+      '💃 彩色轉盤倒數時，知心會站在中間的圓上跳舞，一直跳到時間到；按「暫停」時停在當下的動作。時間到時知心跳一跳，鈴聲照常響。'
+    ],
+    change: [
+      '轉盤上方的數字框改成放在轉盤上面、中間留空隙，不會再蓋住外圈的小燈泡；也預留了知心跳舞時頭和手的空間，跳舞時不會碰到數字框。',
+      '電腦和 Android 平板用透明影片，iPad、iPhone 用動態圖片，看起來一樣。系統設定「減少動態效果」、或把中間換成自己的圖片時，不會跳舞（顯示原本的圖片）。'
+    ],
+    remove: [],
+    fix: [] },
   { v: '1.17.0', d: '2026-11-23',
     add: [
       '🎡 倒數計時多了一種畫面「彩色轉盤」：一圈彩虹色塊和小燈泡，中間是知心，上方是剩下的時間。時間一點一點過去，色塊會從最上面開始一格一格變暗；計時中外圈的小燈泡會像跑馬燈一樣轉。時間到時知心會跳起來，鈴聲照常響。',
@@ -6289,7 +6530,7 @@ if (typeof globalThis !== 'undefined') {
     Fs: globalThis.__jlFs,
     
     APP_VERSION, askConfirm, addCoins, stu, fixStudentBook, fixClassBook, normalizePrizes, redeemCoins, undoRedemption, coinRecord, coinSummary, coinRecordText, coinRecordCSV, openCoinBook, openRedeem, renderStudents, CLASS_KEYS,
-    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, whlDance, whlDanceKind, whlIsAppleWebKit, whlVisible, whlStopDance, WHL_DANCE, dm, dmSync, dmStop, dmWanted, dmUserAudio, dmToggle, dmBtnClick, dmSetVol, dmVol, dmPreview, dmStopPreview, dmRestore, DM_SRC, DM_RESTORE_MS, getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, setMusicPlayingId: v => { musicPlayingId = v; }, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,

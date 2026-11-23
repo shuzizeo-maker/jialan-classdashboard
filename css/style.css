@@ -1132,13 +1132,21 @@ a.tut-link { text-decoration: none; display: inline-block; color: inherit; }
 
 /* ===== 🎡 彩色轉盤倒數（v1.17.0） ===== */
 .whl-wrap { --whl: clamp(150px, 30vh, 330px); position: relative; width: 100%; display: flex; flex-direction: column; align-items: center; }
-.whl-box { position: relative; z-index: 2; margin-bottom: calc(var(--whl) * -.06); padding: 4px 22px; border-radius: 14px;
+/* 數字框在轉盤「上面」，中間留空隙，不疊在燈泡上（v1.17.0 修正：原本往下疊 6%） */
+.whl-wrap { gap: clamp(6px, 1.6vh, 14px); }
+.whl-box { position: static; flex: none; margin: 0; padding: 4px 22px; border-radius: 14px;
   background: linear-gradient(180deg, #1d2430, #0d1219); border: 3px solid #f3c44f; box-shadow: 0 6px 18px rgba(0,0,0,.35), inset 0 0 12px rgba(0,0,0,.6);
   color: #7dffb0; font-family: "Consolas", "Menlo", "Courier New", monospace; font-size: clamp(30px, 5vw, 64px); font-weight: 800; letter-spacing: .06em;
   font-variant-numeric: tabular-nums; line-height: 1.15; text-shadow: 0 0 10px rgba(125,255,176,.75); white-space: nowrap; }
 .whl-wrap.warn .whl-box { color: #ff8d7a; text-shadow: 0 0 12px rgba(255,120,100,.85); }
 .whl-wrap.done .whl-box { color: #ffe27a; text-shadow: 0 0 12px rgba(255,220,110,.85); font-size: clamp(24px, 4vw, 50px); }
-.whl-ring { position: relative; width: var(--whl); height: var(--whl); flex: none; }
+.whl-ring { position: relative; width: var(--whl); height: var(--whl); flex: none; margin-top: var(--whl-over); }
+/* 💃 跳舞的知心（v1.18.0）：腳站在中間圓的下緣，身體往上超出轉盤；
+ * --whl-over＝轉盤上方預留給頭和手的空間（數字框在這個空間的上面，所以永遠不會疊到） */
+.whl-wrap { --whl-over: calc(var(--whl) * .27); }
+.whl-wrap.no-dance { --whl-over: 0px; }
+.whl-dancer { position: absolute; left: 50%; bottom: 22%; height: calc(var(--whl) * 1.03); transform: translateX(-50%); z-index: 3; pointer-events: none; display: flex; justify-content: center; }
+.whl-dancer video, .whl-dancer img { height: 100%; width: auto; max-width: none; display: block; background: transparent; filter: drop-shadow(0 4px 6px rgba(0,0,0,.25)); user-select: none; -webkit-user-drag: none; }
 .whl-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 6px 14px rgba(0,0,0,.3)); }
 .whl-rim { fill: none; stroke: #2b2f3f; stroke-width: 11; }
 .whl-base { fill: #1b1f2b; }
@@ -1163,9 +1171,10 @@ a.tut-link { text-decoration: none; display: inline-block; color: inherit; }
 .whl-wrap.done .whl-char, .whl-wrap.done .whl-char-fb { animation: whlJump .55s cubic-bezier(.3,.7,.4,1) 6; transform-origin: 50% 100%; }
 @keyframes whlJump { 0%, 100% { transform: translateY(0) scale(1, 1); } 15% { transform: translateY(0) scale(1.08, .9); } 50% { transform: translateY(-22%) scale(.96, 1.06); } 85% { transform: translateY(0) scale(1.05, .94); } }
 @media (max-height: 760px) { .whl-wrap { --whl: clamp(120px, 26vh, 240px); } }
-@media (max-height: 560px) { .whl-wrap { --whl: clamp(110px, 24vh, 180px); } .whl-box { font-size: clamp(24px, 4vw, 40px); padding: 2px 14px; } }
+@media (max-height: 560px) { .whl-wrap { --whl: clamp(100px, 22vh, 170px); } .whl-box { font-size: clamp(22px, 3.6vw, 36px); padding: 1px 14px; } }
 @media (max-width: 520px) { .whl-wrap { --whl: min(62vw, clamp(150px, 30vh, 300px)); } }
 body.exam-open .whl-bulb, body.exam-open .whl-char { animation-play-state: paused !important; }
+body.exam-open .whl-dancer { visibility: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .whl-wrap.run .whl-bulb, .whl-wrap.done .whl-bulb, .whl-wrap.done .whl-char, .whl-wrap.done .whl-char-fb { animation: none; }
   .whl-seg path, .whl-seg .whl-dot { transition: none; }
@@ -1176,3 +1185,10 @@ body.exam-open .whl-bulb, body.exam-open .whl-char { animation-play-state: pause
 .whl-set-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 14px; }
 .whl-set-info small { color: var(--muted); font-size: 12px; }
 .whl-set-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* v1.19.0 🎵 跳舞音樂 */
+.whl-music-btn { min-width: 46px; }
+.whl-music-btn.off { opacity: .6; }
+.dm-set .dm-vol { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+.dm-set .dm-vol input[type=range] { flex: 1; min-width: 120px; }
+.dm-set .dm-vol b { min-width: 3.2em; text-align: right; }
