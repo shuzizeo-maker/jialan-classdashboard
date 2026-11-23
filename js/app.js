@@ -487,7 +487,8 @@ function defaults() {
       attNames: false, // 點名：首頁與跑馬燈要不要顯示姓名（畫面是公開的，預設只顯示座號）
       examUrl: 'https://exam-smart-board-v6-persistent-audio.pages.dev/', // 📝 監考看板網址（所有班級共用）
       examBtn: true, // 底部是否顯示「📝 監考」
-      timerStyle: 'island', // 計時器畫面：island＝🏝️ 3D 島嶼、simple＝簡潔
+      timerStyle: 'island', // 計時器畫面：island＝🏝️ 3D 島嶼、simple＝簡潔、wheel＝🎡 彩色轉盤（v1.17.0）
+      timerChar: '',        // 🎡 轉盤中間的角色：''＝知心、'custom'＝老師上傳（圖片在 IndexedDB）
       drawAnim: 'random', // 抽號動畫：random、slot、wheel、gacha、cards、pet、off
       holShow: true, holAnnDays: 3, holAnnWork: true, holOnline: true, // 🎌 國定假日：顯示、公告提前幾天、提醒補班、自動從網路更新
       loc: { name: '臺東縣 金峰鄉', lat: 22.60, lon: 120.96, source: 'openmeteo', cwaKey: '', cwaDataset: 'F-D0047-037', cwaTown: '金峰鄉' }
@@ -551,7 +552,8 @@ function normalizeState(s) {
     // v1.15.0：已經有應用清單的舊資料，補上還沒加過的嘉蘭內建應用（只補一次）
     merged.appsSeen = Array.isArray(s.apps) ? addMissingBuiltins(merged.apps, s.appsSeen) : BUILTIN_APP_IDS.slice();
     syncExamMirror(merged);
-    if (!['island', 'simple'].includes(merged.settings.timerStyle)) merged.settings.timerStyle = 'island';
+    if (!['island', 'simple', 'wheel'].includes(merged.settings.timerStyle)) merged.settings.timerStyle = 'island';
+    if (merged.settings.timerChar !== 'custom') merged.settings.timerChar = '';
     if (!['random', 'slot', 'wheel', 'gacha', 'cards', 'pet', 'off'].includes(merged.settings.drawAnim)) merged.settings.drawAnim = 'random';
     if (!HW_BRUSH_ORDER.includes(merged.ui.hwBrush)) merged.ui.hwBrush = 'done';
     // v1.16.0 🎌 假日
@@ -2772,21 +2774,22 @@ function showTimer() {
   $('#timerDisp').textContent = `${pad(Math.floor(l / 60))}:${pad(l % 60)}`;
   $('#timerStart').textContent = timer.running ? '暫停' : '開始';
   updateIslPill();
+  updateWheel();
 }
-function timerSet(sec) { timer.total = timer.left = Math.max(0, sec); timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.remove('ringing'); isl.done = 0; isl.lastSec = -1; showTimer(); }
+function timerSet(sec) { timer.total = timer.left = Math.max(0, sec); timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.remove('ringing'); isl.done = 0; isl.lastSec = -1; whl.done = false; showTimer(); }
 $$('.presets button').forEach(b => b.onclick = () => timerSet(b.dataset.min * 60));
 $('#timerPlus').onclick = () => { timer.left += 60; if (timer.running) timer.end += 60000; showTimer(); };
 $('#timerMinus').onclick = () => { timer.left = Math.max(0, timer.left - 60); if (timer.running) timer.end -= 60000; showTimer(); };
 $('#timerReset').onclick = () => timerSet(timer.total);
 $('#timerStart').onclick = () => {
   ensureAudio();
-  $('#timerDisp').classList.remove('ringing'); isl.done = 0; isl.lastSec = -1;
+  $('#timerDisp').classList.remove('ringing'); isl.done = 0; isl.lastSec = -1; whl.done = false;
   if (timer.running) { timer.running = false; clearInterval(timer.iv); showTimer(); return; }
   if (timer.left <= 0) return;
   timer.running = true; timer.end = Date.now() + timer.left * 1000;
   timer.iv = setInterval(() => {
     timer.left = (timer.end - Date.now()) / 1000;
-    if (timer.left <= 0) { timer.left = 0; timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.add('ringing'); beep(4); toast('⏰ 時間到！'); islFinish(); }
+    if (timer.left <= 0) { timer.left = 0; timer.running = false; clearInterval(timer.iv); $('#timerDisp').classList.add('ringing'); beep(4); toast('⏰ 時間到！'); islFinish(); whlFinish(); }
     else if (timer.left <= 10) islTickSound(Math.ceil(timer.left));
     showTimer();
   }, 200);
@@ -2801,13 +2804,15 @@ $('#timerStart').onclick = () => {
  * 教師控制台 → 基本資料 → 🎬 動畫效果 可以改成「簡潔」（只有數字，跟以前一樣）。
  */
 const isl = { raf: 0, poll: 0, t: 0, last: 0, yaw: .6, done: 0, ctx: null, w: 0, h: 0, dpr: 1, pets: [], lastSec: -1, geo: null, frames: 0 };
-function islandMode() { return state.settings.timerStyle !== 'simple'; }
+function islandMode() { return state.settings.timerStyle === 'island'; }
 function renderTimerStyle() {
-  const on = islandMode();
-  const simple = $('#timerDisp'), wrap = $('#islWrap');
-  if (simple) simple.style.display = on ? 'none' : '';
+  const st = state.settings.timerStyle, on = st === 'island', wh = st === 'wheel';
+  const simple = $('#timerDisp'), wrap = $('#islWrap'), ww = $('#whlWrap');
+  if (simple) simple.style.display = on || wh ? 'none' : '';
   if (wrap) wrap.style.display = on ? '' : 'none';
+  if (ww) ww.style.display = wh ? '' : 'none';
   updateIslPill();
+  if (wh) updateWheel();
   if (on) islStart();
 }
 function islVisible() {
@@ -2831,7 +2836,7 @@ function updateIslPill() {
 }
 // 最後 10 秒的滴答聲（只在 3D 島嶼模式）
 function islTickSound(l) {
-  if (!islandMode() || !actx || l === isl.lastSec) return;
+  if (!(islandMode() || wheelMode()) || !actx || l === isl.lastSec) return;
   isl.lastSec = l;
   try {
     const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
@@ -3053,6 +3058,157 @@ function islStart() {
   isl.raf = requestAnimationFrame(islFrame);
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) islStart(); });
+
+/* ---------------- 🎡 彩色轉盤倒數（v1.17.0） ----------------
+ * 計時器的第三種畫面：一圈 20 格彩虹色塊（每格一個白點）、外圈一圈小燈泡、上方數字框、中間是角色「知心」。
+ * 時間一秒一秒過去，色塊從最上面開始、順時針一格一格變暗（依經過的時間比例）；計時中外圈燈泡跑馬燈。
+ * 時間到：知心跳一跳、燈泡一起閃，加上原本的鈴聲。
+ * 全部用 SVG＋CSS 動畫（不用 canvas、不用網路）；系統設定「減少動態效果」時不跑動畫。
+ * 中間的圖片：預設 images/zhixin.webp（知心，已去背、只留上半身）；老師可以在
+ * 「教師控制台 → 基本資料 → 🎬 動畫效果」換成自己的圖片（縮小後存在這個瀏覽器的 IndexedDB，
+ * 不放 localStorage、不放在備份檔裡；settings.timerChar = 'custom' 只是記號），也可以恢復知心。
+ */
+const WHL_N = 20, WHL_BULBS = 32;
+const WHL_DEFAULT_IMG = 'images/zhixin.webp';
+const WHL_IDB_KEY = 'timerChar';
+const WHL_MAX_PX = 360;          // 自訂圖片縮到最長邊 360px
+const WHL_MAX_BYTES = 400000;    // 存起來的圖片最多約 400KB
+const WHL_RAW_MAX = 300000;      // 瀏覽器不能縮圖時，原圖最多 300KB
+const whl = { built: false, lit: -1, done: false, customUrl: '', loaded: false };
+function wheelMode() { return state.settings.timerStyle === 'wheel'; }
+// 還亮著幾格（依剩下的時間比例；超過原本時間＝全亮）
+function whlLit(left, total) {
+  if (!(total > 0)) return left > 0 ? WHL_N : 0;
+  return Math.max(0, Math.min(WHL_N, Math.ceil(left / total * WHL_N - 1e-9)));
+}
+// HSL → #rrggbb（直接寫色碼，舊瀏覽器也不會出錯）
+function whlHex(h, sat = .88, l = .58) {
+  const f = n => { const k = (n + h / 30) % 12, c = l - sat * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1)); return Math.round(c * 255).toString(16).padStart(2, '0'); };
+  return '#' + f(0) + f(8) + f(4);
+}
+const whlPt = (r, deg) => { const a = (deg - 90) * Math.PI / 180; return [+(Math.cos(a) * r).toFixed(2), +(Math.sin(a) * r).toFixed(2)]; };
+// 轉盤的 SVG（viewBox -100～100；0 度在正上方、順時針）
+function whlSVG() {
+  const R1 = 60, R2 = 85, gap = 1.4, step = 360 / WHL_N;
+  const segs = [];
+  for (let i = 0; i < WHL_N; i++) {
+    const a0 = i * step + gap / 2, a1 = (i + 1) * step - gap / 2;
+    const [x1, y1] = whlPt(R2, a0), [x2, y2] = whlPt(R2, a1), [x3, y3] = whlPt(R1, a1), [x4, y4] = whlPt(R1, a0);
+    const [dx, dy] = whlPt((R1 + R2) / 2, (a0 + a1) / 2);
+    const hue = Math.round(i * 360 / WHL_N);
+    segs.push(`<g class="whl-seg" data-i="${i}"><path d="M${x1} ${y1}A${R2} ${R2} 0 0 1 ${x2} ${y2}L${x3} ${y3}A${R1} ${R1} 0 0 0 ${x4} ${y4}Z" fill="${whlHex(hue)}"/><circle class="whl-dot" cx="${dx}" cy="${dy}" r="3.4"/></g>`);
+  }
+  const bulbs = [];
+  for (let i = 0; i < WHL_BULBS; i++) {
+    const [x, y] = whlPt(93, i * 360 / WHL_BULBS + 360 / WHL_BULBS / 2);
+    bulbs.push(`<circle class="whl-bulb b${i % 4}" cx="${x}" cy="${y}" r="2.7"/>`);
+  }
+  return `<svg class="whl-svg" viewBox="-100 -100 200 200" aria-hidden="true">
+    <circle class="whl-rim" r="93" />
+    <circle class="whl-base" r="${R2 + 1.5}" />
+    ${segs.join('')}
+    <circle class="whl-hub" r="${R1 - 1.5}" />
+    ${bulbs.join('')}
+  </svg>`;
+}
+function buildWheel() {
+  const ring = $('#whlRing'); if (!ring) return;
+  const old = ring.querySelector('svg'); if (old) old.remove();
+  ring.insertAdjacentHTML('afterbegin', whlSVG());
+  whl.built = true; whl.lit = -1;
+  applyWheelChar();
+}
+function updateWheel() {
+  const wrap = $('#whlWrap'); if (!wrap || !wheelMode()) return;
+  if (!whl.built) buildWheel();
+  const l = Math.max(0, Math.ceil(timer.left));
+  const done = whl.done && !timer.running && timer.left <= 0;
+  const num = $('#whlNum');
+  if (num) num.textContent = done ? '⏰ 時間到！' : `${pad(Math.floor(l / 60))}:${pad(l % 60)}`;
+  const lit = done ? 0 : whlLit(timer.left, timer.total);
+  if (lit !== whl.lit) {
+    $$('#whlRing .whl-seg').forEach(g => g.classList.toggle('off', +g.dataset.i < WHL_N - lit));
+    whl.lit = lit;
+  }
+  wrap.classList.toggle('run', timer.running);
+  wrap.classList.toggle('warn', timer.running && l <= 10 && l > 0);
+  wrap.classList.toggle('done', done);
+}
+function whlFinish() {
+  if (!wheelMode()) return;
+  whl.done = true;
+  const wrap = $('#whlWrap');
+  if (wrap) { wrap.classList.remove('done'); void wrap.offsetWidth; }   // 重新開始跳的動畫
+  updateWheel();
+}
+// 中間的角色圖片
+function whlCharSrc() { return state.settings.timerChar === 'custom' && whl.customUrl ? whl.customUrl : WHL_DEFAULT_IMG; }
+function applyWheelChar() {
+  const img = $('#whlChar'), fb = $('#whlCharFb'); if (!img) return;
+  const src = whlCharSrc();
+  img.onerror = () => {
+    if (img.getAttribute('src') !== WHL_DEFAULT_IMG) { img.setAttribute('src', WHL_DEFAULT_IMG); return; }
+    img.style.display = 'none'; if (fb) fb.style.display = '';
+  };
+  img.onload = () => { img.style.display = ''; if (fb) fb.style.display = 'none'; };
+  if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+  img.alt = src === WHL_DEFAULT_IMG ? '知心' : '自訂角色';
+  const pv = $('#bWhlPreview'); if (pv) pv.setAttribute('src', src);
+  const st = $('#bWhlState'); if (st) st.textContent = whlCharStateText();
+}
+function whlCharStateText() {
+  if (state.settings.timerChar !== 'custom') return '目前：知心（預設）';
+  return whl.customUrl ? '目前：您上傳的圖片' : '目前：知心（這台電腦沒有您上傳的圖片，例如從備份還原到新電腦時；請再上傳一次）';
+}
+async function loadWheelChar() {
+  if (state.settings.timerChar === 'custom') {
+    const v = await idbGet(WHL_IDB_KEY);
+    whl.customUrl = typeof v === 'string' && /^data:image\//.test(v) ? v : '';
+  } else whl.customUrl = '';
+  whl.loaded = true;
+  applyWheelChar();
+}
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || '')); r.onerror = () => reject(r.error); r.readAsDataURL(file); });
+}
+// 把老師選的圖片縮小成 dataURL（WebP，不支援時用 PNG；保留透明背景）
+async function whlShrinkImage(file) {
+  if (!file || !/^image\//.test(file.type || '')) throw new Error('請選圖片檔（PNG、JPG、WebP、GIF）');
+  if (file.size > 15 * 1024 * 1024) throw new Error('圖片太大（超過 15MB），請先縮小再上傳');
+  const raw = await readAsDataURL(file);
+  let out = '';
+  try {
+    const cv = document.createElement('canvas');
+    let ctx = null; try { ctx = cv.getContext && cv.getContext('2d'); } catch (e) { ctx = null; }
+    const img = ctx ? await new Promise((resolve, reject) => { const im = new Image(), t = setTimeout(() => reject(new Error('timeout')), 8000); im.onload = () => { clearTimeout(t); resolve(im); }; im.onerror = () => { clearTimeout(t); reject(new Error('bad')); }; im.src = raw; }) : null;
+    const w0 = img ? img.naturalWidth || img.width : 0, h0 = img ? img.naturalHeight || img.height : 0;
+    const k = Math.min(1, WHL_MAX_PX / Math.max(w0, h0, 1));
+    cv.width = Math.max(1, Math.round(w0 * k)); cv.height = Math.max(1, Math.round(h0 * k));
+    if (ctx && w0 && h0) {
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      out = cv.toDataURL('image/webp', .86);
+      if (!/^data:image\/webp/.test(out) || out.length > WHL_MAX_BYTES) { const png = cv.toDataURL('image/png'); if (!/^data:image\/webp/.test(out) || png.length < out.length) out = png; }
+    }
+  } catch (e) { out = ''; }
+  if (!out) {   // 瀏覽器不能縮圖：小的圖片直接用
+    if (raw.length > WHL_RAW_MAX * 1.37) throw new Error('這個瀏覽器不能縮小圖片，請先把圖片縮小到 300KB 以下');
+    out = raw;
+  }
+  if (out.length > WHL_MAX_BYTES * 1.37) throw new Error('圖片縮小後還是太大，請換一張');
+  return out;
+}
+async function setWheelChar(dataUrl) {
+  if (!/^data:image\//.test(String(dataUrl || ''))) throw new Error('圖片格式不對');
+  await idbSet(WHL_IDB_KEY, dataUrl);
+  whl.customUrl = dataUrl; state.settings.timerChar = 'custom';
+  save(); applyWheelChar();
+}
+async function resetWheelChar() {
+  try { await idbDel(WHL_IDB_KEY); } catch (e) {}
+  whl.customUrl = ''; state.settings.timerChar = '';
+  save(); applyWheelChar();
+}
+
 
 /* ---------------- 番茄鐘 ---------------- */
 const pomo = { focus: true, left: 25 * 60, running: false, end: 0, iv: null, count: 0 };
@@ -3548,7 +3704,7 @@ const DRAW_STYLES = {
 };
 const DRAW_STYLE_KEYS = Object.keys(DRAW_STYLES);
 const DRAW_ANIM_OPTIONS = ['random', ...DRAW_STYLE_KEYS, 'off'];
-const TIMER_STYLE_OPTIONS = ['island', 'simple'];
+const TIMER_STYLE_OPTIONS = ['island', 'simple', 'wheel'];
 const prefersReducedMotion = () => { try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; } };
 let lastDrawStyle = '';
 // 這次要用哪一種動畫（'off'＝原本的跳數字）
@@ -4438,15 +4594,35 @@ function ctBasic(el) {
     <h4 style="margin:8px 0 10px">🎬 動畫效果</h4>
     <div class="row2">
       <div class="field"><span>倒數計時的畫面</span><select id="bTimerStyle">
-        <option value="island"${s.timerStyle !== 'simple' ? ' selected' : ''}>🏝️ 3D 島嶼（預設）</option>
+        <option value="island"${s.timerStyle !== 'simple' && s.timerStyle !== 'wheel' ? ' selected' : ''}>🏝️ 3D 島嶼（預設）</option>
+        <option value="wheel"${s.timerStyle === 'wheel' ? ' selected' : ''}>🎡 彩色轉盤（知心陪你倒數）</option>
         <option value="simple"${s.timerStyle === 'simple' ? ' selected' : ''}>簡潔（只有數字，舊平板比較順）</option></select></div>
       <div class="field"><span>抽號動畫</span><select id="bDrawAnim">
         <option value="random"${!s.drawAnim || s.drawAnim === 'random' ? ' selected' : ''}>每次隨機（預設）</option>
         ${DRAW_STYLE_KEYS.map(k => `<option value="${k}"${s.drawAnim === k ? ' selected' : ''}>${DRAW_STYLES[k].icon} ${DRAW_STYLES[k].name}</option>`).join('')}
         <option value="off"${s.drawAnim === 'off' ? ' selected' : ''}>關閉動畫（只跳數字）</option></select></div>
     </div>
+    <div class="whl-set" id="bWhlSet">
+      <img class="whl-set-pv" id="bWhlPreview" src="${esc(whlCharSrc())}" alt="轉盤中間的角色">
+      <div class="whl-set-info"><b>🎡 彩色轉盤中間的角色</b><small id="bWhlState">${esc(whlCharStateText())}</small>
+        <div class="whl-set-btns"><button type="button" class="btn" id="bWhlUp">🖼️ 換成自己的圖片</button><button type="button" class="btn" id="bWhlReset">↩️ 恢復知心</button></div>
+        <small>建議用去背的 PNG，人物在中間；會自動縮小，只存在這台電腦的瀏覽器裡（不在備份檔裡）。</small></div>
+      <input type="file" id="bWhlFile" accept="image/*" style="display:none">
+    </div>
     <div class="err" id="bErr"></div>
     <div class="modal-actions"><button class="primary" id="bSave">儲存</button></div>`;
+  $('#bWhlUp').onclick = () => $('#bWhlFile').click();
+  $('#bWhlFile').onchange = async e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try { await setWheelChar(await whlShrinkImage(f)); toast('✅ 轉盤中間換成您的圖片了'); }
+    catch (err) { toast('⚠️ ' + (err && err.message || '圖片沒有換成功'), 4000); }
+  };
+  $('#bWhlReset').onclick = async () => {
+    if (state.settings.timerChar !== 'custom') return toast('現在就是知心');
+    if (!(await askConfirm('確定換回知心？您上傳的圖片會從這台電腦刪除。', '換回知心'))) return;
+    await resetWheelChar(); toast('↩️ 已換回知心');
+  };
   $('#bExamReset').onclick = () => { $('#bExamUrl').value = DEFAULT_EXAM_URL; toast('已填回預設網址，按「儲存」才會生效'); };
   $('#bSrc').onchange = e => { $('#bCwa').classList.toggle('hidden', e.target.value !== 'cwa'); $('#bOm').classList.toggle('hidden', e.target.value === 'cwa'); };
   $('#bSave').onclick = async () => {
@@ -5487,7 +5663,7 @@ function ctData(el) {
       localStorage.removeItem(KEY); sessionStorage.removeItem('jl-auth');
       try { localStorage.removeItem(HOL_CACHE_KEY); } catch (e) {}
       state.music = normalizeMusic(null);
-      Promise.all([idbDelPrefix('music'), idbDelPrefix(SNAP_PREFIX)]).finally(() => location.reload());
+      Promise.all([idbDelPrefix('music'), idbDelPrefix(SNAP_PREFIX), idbDel(WHL_IDB_KEY)]).finally(() => location.reload());
     });
   };
   $('#dLogout').onclick = () => { lockNow(); closeModal(); toast('🔒 已上鎖'); };
@@ -5942,7 +6118,8 @@ renderAll();
 try { const raw = localStorage.getItem(KEY); if (raw && !Array.isArray(JSON.parse(raw).classes)) save(); } catch (e) {}
 tick();
 setInterval(tick, 1000);
-setTimeout(() => { refreshHolidays().catch(() => {}); }, 2500);   // 🎌 內建以外的年份從網路補
+setTimeout(() => { refreshHolidays().catch(() => {}); }, 2500);
+loadWheelChar().catch(() => {});   // 🎡 轉盤：讀老師上傳的角色圖片   // 🎌 內建以外的年份從網路補
 loadWeather();
 if (!state.settings.setupDone) openSetup();
 setTimeout(() => { try { maybeAutoBackup(); } catch (_) {} }, 800);
@@ -5953,8 +6130,8 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.16.0';
-const APP_UPDATED = '2026-11-20';
+const APP_VERSION = '1.17.0';
+const APP_UPDATED = '2026-11-23';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
@@ -5967,6 +6144,17 @@ const APP_UPDATED = '2026-11-20';
  * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
  */
 const RELEASE_NOTES = [
+  { v: '1.17.0', d: '2026-11-23',
+    add: [
+      '🎡 倒數計時多了一種畫面「彩色轉盤」：一圈彩虹色塊和小燈泡，中間是知心，上方是剩下的時間。時間一點一點過去，色塊會從最上面開始一格一格變暗；計時中外圈的小燈泡會像跑馬燈一樣轉。時間到時知心會跳起來，鈴聲照常響。',
+      '🖼️ 可以把轉盤中間的知心換成自己的圖片（例如班級吉祥物），也可以隨時換回知心。'
+    ],
+    change: [
+      '在「教師控制台 → 基本資料 → 🎬 動畫效果」的「倒數計時的畫面」選「🎡 彩色轉盤」就能使用；原本的 3D 島嶼和簡潔畫面都沒有變，預設還是 3D 島嶼。',
+      '自己的圖片只存在這台電腦的瀏覽器裡，不會放進備份檔；換電腦或還原備份後會先顯示知心，再上傳一次就好。'
+    ],
+    remove: [],
+    fix: [] },
   { v: '1.16.0', d: '2026-11-20',
     add: [
       '🎌 國定假日：作息表在放假的日子會顯示「🎌 今天 行憲紀念日 放假」；整週課表、一週作業的放假日是紅色並寫上假日名稱；上方日期也會顯示假日名稱。資料是行政院人事行政總處公布的 2026、2027 年辦公日曆。',
@@ -6101,7 +6289,7 @@ if (typeof globalThis !== 'undefined') {
     Fs: globalThis.__jlFs,
     
     APP_VERSION, askConfirm, addCoins, stu, fixStudentBook, fixClassBook, normalizePrizes, redeemCoins, undoRedemption, coinRecord, coinSummary, coinRecordText, coinRecordCSV, openCoinBook, openRedeem, renderStudents, CLASS_KEYS,
-    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,
