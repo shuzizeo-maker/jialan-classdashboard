@@ -1199,6 +1199,11 @@ body.exam-open .whl-dancer { visibility: hidden; }
 .scal-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
 .scal-tools .scal-q { flex: 1; min-width: 180px; }
 .scal-days input { width: 64px; }
+/* v1.20.1：行事曆的輸入框（天數、搜尋、排除關鍵字）沒有底色時，瀏覽器給白底，字卻是淺色 → 看不到打的字 */
+.scal-input { background: rgba(0,0,0,.3); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color-scheme: dark; min-height: 38px; }
+.scal-input::placeholder { color: var(--muted); opacity: .85; }
+.scal-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.scal-days .scal-days-in { width: 5.2em; margin: 0 4px; text-align: center; font-size: 16px; }
 .scal-status { display: block; margin: 4px 0 8px; opacity: .85; }
 .scal-list { max-height: 320px; overflow: auto; border-radius: 10px; }
 .scal-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 7px 10px; border-bottom: 1px solid rgba(128,128,128,.18); cursor: pointer; font-size: 15px; }

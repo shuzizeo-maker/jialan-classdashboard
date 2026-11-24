@@ -603,7 +603,9 @@ const SCAL_GAS_CODE = "/**\n * 嘉蘭班級儀表板：📅 學校行事曆橋�
 function defaultSchoolCal() {
   return { url: '', days: SCAL_DAYS_DEFAULT, exclude: '', excludeOn: true, cache: { events: [], calendarName: '', updatedAt: '', fetchedAt: 0, error: '', errorAt: 0 } };
 }
-const scalDays = v => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(SCAL_DAYS_MIN, Math.min(SCAL_DAYS_MAX, n)) : SCAL_DAYS_DEFAULT; };
+const scalDays = v => { const n = (v === '' || v === null || v === undefined || (typeof v === 'string' && !v.trim())) ? NaN : Math.round(Number(v)); return Number.isFinite(n) ? Math.max(SCAL_DAYS_MIN, Math.min(SCAL_DAYS_MAX, n)) : SCAL_DAYS_DEFAULT; };
+// 天數輸入框（v1.20.1）：打字中不碰它；離開／按 Enter 時才驗證。空白或不是數字 → 回到原本的天數；超出 → 限制在 1～30
+const scalDaysInput = (v, cur) => { const t = String(v ?? '').trim(); const n = t === '' ? NaN : Math.round(Number(t)); return Number.isFinite(n) ? Math.max(SCAL_DAYS_MIN, Math.min(SCAL_DAYS_MAX, n)) : scalDays(cur); };
 const SCAL_DK = /^\d{4}-\d{2}-\d{2}$/, SCAL_DT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
 // 一筆活動（GAS 回傳或快取）→ 乾淨的格式；格式不對回傳 null
 function scalEvent(x) {
@@ -664,10 +666,11 @@ function parseScalUrl(v) {
   return { ok: true, url: t, warn };
 }
 let scalFetching = false;
+let scalAgain = false;   // v1.20.1
 async function scalRefresh({ force = false } = {}) {
   const c = state.schoolCal;
   if (!c.url) return { ok: false, msg: '還沒有設定 Apps Script 網址' };
-  if (scalFetching) return { ok: false, msg: '正在更新' };
+  if (scalFetching) { if (force) scalAgain = true; return { ok: false, msg: '正在更新' }; }   // v1.20.1：正在抓時改了天數／網址 → 抓完再抓一次
   if (typeof fetch !== 'function' || navigator.onLine === false) { c.cache.error = '沒有網路'; c.cache.errorAt = Date.now(); scalRender(); return { ok: false, msg: '沒有網路' }; }
   scalFetching = true; scalRender();
   const ac = typeof AbortController === 'function' ? new AbortController() : null, t = ac ? setTimeout(() => ac.abort(), 20000) : 0;
@@ -687,7 +690,10 @@ async function scalRefresh({ force = false } = {}) {
     c.cache.error = e && e.name === 'AbortError' ? '連線逾時（20 秒）' : e && e.name === 'TypeError' ? '無法連線（網路中斷，或網址不正確）' : String(e && e.message || e);
     c.cache.errorAt = Date.now(); save();
     return { ok: false, msg: c.cache.error };
-  } finally { clearTimeout(t); scalFetching = false; scalRender(); }
+  } finally {
+    clearTimeout(t); scalFetching = false; scalRender();
+    if (scalAgain) { scalAgain = false; setTimeout(() => scalRefresh({ force: true }).catch(() => {}), 0); }
+  }
 }
 // 自動更新：有網址、超過 1 小時或換日了才抓
 function scalAuto(now = new Date()) {
@@ -762,7 +768,7 @@ function scalMount(el, pre) {
     el.innerHTML = `<h4 style="margin:0 0 8px">📅 本週學校行事曆（勾選加入公告）${isMulti() ? `<b class="cls-note">勾選只影響「${esc(classLabel(curClassObj()))}」</b>` : ''}</h4>
       <div id="bScNoUrl" style="display:${c.url ? 'none' : ''}"><p class="sub" style="margin:0 0 8px">還沒有設定學校行事曆（需要先部署一個 Google Apps Script，約 3 分鐘）。</p><button type="button" class="btn" id="bScGo">📅 前往設定學校行事曆</button></div>
       <div id="bScMain" style="display:${c.url ? '' : 'none'}">
-        <div class="scal-tools"><input id="bScQ" class="scal-q" type="search" placeholder="🔍 搜尋標題或地點" value="${esc(scalQuery)}"><button type="button" class="btn" id="bScAll">全選目前顯示</button><button type="button" class="btn" id="bScNone">全部取消</button><button type="button" class="btn" id="bScRefresh">🔄 重新整理</button></div>
+        <div class="scal-tools"><input id="bScQ" class="scal-q scal-input" type="search" placeholder="🔍 搜尋標題或地點" value="${esc(scalQuery)}"><button type="button" class="btn" id="bScAll">全選目前顯示</button><button type="button" class="btn" id="bScNone">全部取消</button><button type="button" class="btn" id="bScRefresh">🔄 重新整理</button></div>
         <small class="scal-status" id="bScStatus">${scalStatusText()}</small>
         <div class="scal-list" id="bScList">${scalListHTML()}</div>
       </div>`;
@@ -772,12 +778,12 @@ function scalMount(el, pre) {
       <h4 style="margin:6px 0 8px">⚙️ 設定（所有班級共用）</h4>
       <div class="field"><span>Apps Script 網頁應用程式網址（https://script.google.com/macros/s/……/exec）</span>
         <div class="exam-url-row"><input id="scUrl" type="url" value="${esc(c.url)}" placeholder="https://script.google.com/macros/s/……/exec" autocomplete="off"><button type="button" class="btn primary" id="scSave">儲存網址</button></div></div>
-      <div class="scal-tools"><label class="scal-days">顯示天數 <input id="scDays" type="number" min="${SCAL_DAYS_MIN}" max="${SCAL_DAYS_MAX}" value="${c.days}"> 天（今天起，1～30，預設 7）</label><button type="button" class="btn" id="scRefresh">🔄 立即更新</button></div>
+      <div class="scal-tools"><label class="scal-days">顯示天數 <input id="scDays" class="scal-input scal-days-in" type="number" inputmode="numeric" min="${SCAL_DAYS_MIN}" max="${SCAL_DAYS_MAX}" step="1" value="${c.days}" aria-label="顯示天數（1～30）"> 天（今天起，1～30，預設 7）</label><button type="button" class="btn" id="scRefresh">🔄 立即更新</button></div>
       <small class="scal-status" id="scStatus">${scalStatusText()}</small>
       <div class="err" id="scErr"></div>
       <h4 style="margin:14px 0 8px">📋 活動清單（勾選＝加入${isMulti() ? `「${esc(classLabel(curClassObj()))}」的` : ''}公告）</h4>
-      <div class="scal-tools"><input id="scQ" class="scal-q" type="search" placeholder="🔍 搜尋標題或地點" value="${esc(scalQuery)}"></div>
-      <div class="scal-tools"><input id="scEx" class="scal-q" value="${esc(c.exclude)}" placeholder="排除關鍵字，例：教師, 會議, 研習"><label class="chk" style="font-size:14px"><input type="checkbox" id="scExOn"${c.excludeOn !== false ? ' checked' : ''}> 排除（不顯示、不公告）</label></div>
+      <div class="scal-tools"><input id="scQ" class="scal-q scal-input" type="search" placeholder="🔍 搜尋標題或地點" value="${esc(scalQuery)}"></div>
+      <div class="scal-tools"><input id="scEx" class="scal-q scal-input" value="${esc(c.exclude)}" placeholder="排除關鍵字，例：教師, 會議, 研習"><label class="chk" style="font-size:14px"><input type="checkbox" id="scExOn"${c.excludeOn !== false ? ' checked' : ''}> 排除（不顯示、不公告）</label></div>
       <div class="scal-tools"><button type="button" class="btn" id="scAll">全選目前顯示</button><button type="button" class="btn" id="scNone">全部取消</button></div>
       <div class="scal-list" id="scList">${scalListHTML()}</div>
       <details class="scal-gas" id="scGas"><summary>📖 GAS 程式碼與 3 分鐘設定步驟</summary>
@@ -801,12 +807,17 @@ function scalMount(el, pre) {
       save(); renderAll(); toast(r.url ? '✅ 網址已儲存，正在更新…' : '已清除網址');
       if (r.url) scalRefresh({ force: true }); else scalRender();
     };
-    $('#scDays').onchange = e => {
-      const n = scalDays(e.target.value); e.target.value = n;
+    // v1.20.1：打字時（input）完全不處理，不改值、不重畫；change 才驗證並存檔
+    const applyDays = e => {
+      const n = scalDaysInput(e.target.value, c.days);
+      if (String(e.target.value).trim() !== String(n)) e.target.value = n;
       if (n === c.days) return;
       c.days = n; save(); renderAll(); scalRender();
       if (c.url) scalRefresh({ force: true });
     };
+    $('#scDays').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } };
+    $('#scDays').onchange = applyDays;   // 按上下微調、離開欄位、按 Enter
+    $('#scDays').onblur = applyDays;     // 有些瀏覽器離開時不發 change，再保險一次（同一個值不會重複抓）
     $('#scEx').oninput = e => { c.exclude = e.target.value.slice(0, 300); save(); renderAll(); scalRender(['scList', 'bScList']); };
     $('#scExOn').onchange = e => { c.excludeOn = e.target.checked; save(); renderAll(); scalRender(); };
     $('#scCopy').onclick = () => scalCopyCode();
@@ -6614,7 +6625,7 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.20.0';
+const APP_VERSION = '1.20.1';
 const APP_UPDATED = '2026-11-24';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -6628,6 +6639,9 @@ const APP_UPDATED = '2026-11-24';
  * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
  */
 const RELEASE_NOTES = [
+  { v: '1.20.1', d: '2026-11-24',
+    add: [], change: ['「📅 學校行事曆」的天數、搜尋、排除關鍵字輸入框改成和其他欄位一樣的深色底、淺色字，按 Enter 或離開欄位時才套用天數。'], remove: [],
+    fix: ['「📅 學校行事曆」的「顯示天數」看起來打不進數字：其實有打進去，但框框是白底、字也是白色，所以看不到。現在看得清楚，可以反白、刪掉、直接打 14、3、30 或按上下微調；清空後離開會回到原本的天數，超過 30 會變成 30、小於 1 會變成 1。公告編輯畫面的搜尋框也一併修好。'] },
   { v: '1.20.0', d: '2026-11-24',
     add: [
       '📅 學校行事曆：把學校 Google 日曆接上儀表板（教師控制台多了「📅 學校行事曆」分頁）。只要部署一次 Google Apps Script（約 3 分鐘，步驟和程式碼都在分頁裡，可以一鍵複製），日曆不用公開。',
@@ -6806,7 +6820,7 @@ if (typeof globalThis !== 'undefined') {
     Fs: globalThis.__jlFs,
     
     APP_VERSION, askConfirm, addCoins, stu, fixStudentBook, fixClassBook, normalizePrizes, redeemCoins, undoRedemption, coinRecord, coinSummary, coinRecordText, coinRecordCSV, openCoinBook, openRedeem, renderStudents, CLASS_KEYS,
-    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, whlDance, whlDanceKind, whlIsAppleWebKit, whlVisible, whlStopDance, WHL_DANCE, dm, dmSync, dmStop, dmWanted, dmUserAudio, dmToggle, dmBtnClick, dmSetVol, dmVol, dmPreview, dmStopPreview, dmRestore, DM_SRC, DM_RESTORE_MS, getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, setMusicPlayingId: v => { musicPlayingId = v; }, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, SCAL_GAS_CODE, SCAL_CAL_ID, SCAL_DAYS_DEFAULT, defaultSchoolCal, normalizeSchoolCal, normalizeScalPicks, scalEvent, scalEvents, parseSchoolCal, scalUrl, parseScalUrl, scalRefresh, scalAuto, scalInRange, scalExcluded, scalVisible, scalWhen, buildSchoolCalParts, scalSetPick, scalPickVisible, scalClearPicks, scalStatusText, scalRender, scalCopyCode, ctSchoolCal, setScalQuery: q => { scalQuery = q; }, getScalQuery: () => scalQuery, newYearReset, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, whlDance, whlDanceKind, whlIsAppleWebKit, whlVisible, whlStopDance, WHL_DANCE, dm, dmSync, dmStop, dmWanted, dmUserAudio, dmToggle, dmBtnClick, dmSetVol, dmVol, dmPreview, dmStopPreview, dmRestore, DM_SRC, DM_RESTORE_MS, getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, setMusicPlayingId: v => { musicPlayingId = v; }, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, SCAL_GAS_CODE, scalDaysInput, scalDays, SCAL_CAL_ID, SCAL_DAYS_DEFAULT, defaultSchoolCal, normalizeSchoolCal, normalizeScalPicks, scalEvent, scalEvents, parseSchoolCal, scalUrl, parseScalUrl, scalRefresh, scalAuto, scalInRange, scalExcluded, scalVisible, scalWhen, buildSchoolCalParts, scalSetPick, scalPickVisible, scalClearPicks, scalStatusText, scalRender, scalCopyCode, ctSchoolCal, setScalQuery: q => { scalQuery = q; }, getScalQuery: () => scalQuery, newYearReset, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,
