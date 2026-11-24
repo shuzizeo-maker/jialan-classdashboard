@@ -3,6 +3,22 @@
 版號規則：主版號.次版號.修正號（大改版／新功能／小修正）。
 改版時請同步修改 `js/app.js` 裡的 `APP_VERSION` 與 `APP_UPDATED`。
 
+## v1.20.0（2026-11-24）
+
+- 新增：📅 學校行事曆（Google Apps Script 橋接）。
+  - 資料來源：老師自己部署的 Google Apps Script 網頁應用程式（`scripts/school-calendar-gas.gs`），用老師的 Google 帳號讀學校日曆、回傳 JSON。**日曆不用公開、沒有 CORS 問題**；儀表板用 `fetch(網址?days=N, { signal, cache: 'no-store' })`，不加自訂 header（不會觸發 preflight）。預設日曆 ID 已寫在 GAS 範本裡。
+  - GAS `doGet(e)`：`?days=N`（預設 7，限制 1～30），以 Asia/Taipei 的「今天 00:00:00」到「今天＋days−1 的 23:59:59」；每筆活動回傳 `id`（`ev.getId() + '_' + 開始日期`，重複活動每一次都能分別勾選）、`title`、`start`／`end`（全天是 `YYYY-MM-DD`，`end` 是最後一天、含當天；有時間是 `YYYY-MM-DDTHH:mm`，台灣時間）、`allDay`、`location`；回傳 `{ ok: true, calendarName, updatedAt, days, events }`，錯誤時 `{ ok: false, error }`。只回傳標題、時間、地點（不含說明、參加者）。
+  - 教師控制台新增「📅 學校行事曆」分頁：Apps Script 網址（只接受 https://；貼成 /dev 測試網址會提醒）、顯示天數（1～30，預設 7）、🔄 立即更新、上次更新時間／錯誤訊息、關鍵字搜尋（標題、地點）、排除關鍵字（逗號、頓號或空白分隔，可開關，即時套用）、「全選目前顯示」「全部取消」、活動清單（勾選框、日期星期＋時間或「全天」、標題、📍地點），以及折疊的「📖 GAS 程式碼與 3 分鐘設定步驟」（完整程式碼＋📋 複製 GAS 程式碼）。
+  - 點首頁公告打開的「基本資料」：手寫公告下面多了「📅 本週學校行事曆（勾選加入公告）」，和分頁是同一份資料、即時同步（搜尋、全選目前顯示、全部取消、🔄 重新整理）。還沒設定網址時顯示提示和「📅 前往設定學校行事曆」。
+  - 公告跑馬燈（`buildSchoolCalParts()`，接在 🎌 放假公告後面，淡藍色）：只放「已勾選、沒被排除、日期在今天～今天＋天數−1」的活動，過期的自動消失。格式：`📅 今天 11/24（二） 08:30 朝會`、`📅 明天 11/25（三） 校外教學`、`📅 11/26（四） 活動`、跨日 `📅 11/26（四）～11/27（五） 活動`（從今天／明天開始的跨日活動也加「今天」「明天」）。
+  - **新抓到的活動預設全部不勾**（避免教師專屬活動誤上公告）。被排除關鍵字擋掉的活動不顯示、也**不會公告**（就算之前勾過）。「全選目前顯示」只勾搜尋、排除後看得到的活動。
+  - 自動更新：有網址時，開啟儀表板 4 秒後、之後每小時整點檢查一次（超過 1 小時或換日才抓）。更新失敗保留舊資料繼續用，並顯示錯誤。日曆上刪掉的活動，會從目前班級的勾選拿掉。
+- 資料：
+  - `state.schoolCal`（**所有班級共用**、包含在備份裡、開始新學年保留）：`{ url, days, exclude, excludeOn, cache: { events, calendarName, updatedAt, fetchedAt, error, errorAt } }`。換網址會清空活動和目前班級的勾選。
+  - `state.scalPicks`（**每班各自**，在 `CLASS_KEYS` 裡，跟著換班級、包含在備份裡、開始新學年清空）：勾選的活動 id。舊資料、舊備份沒有這兩個欄位時自動補上（沒有網址、沒有勾選）。
+- 檔案：新增 `scripts/school-calendar-gas.gs`。儀表板裡的「📋 複製 GAS 程式碼」和這個檔案內容完全一樣。
+- 技術說明：`parseSchoolCal()`、`scalEvent()`、`normalizeSchoolCal()`、`scalRefresh()`、`scalAuto()`、`scalVisible()`、`scalWhen()`、`buildSchoolCalParts(now, picks)`、`scalSetPick()`、`scalPickVisible()`、`scalClearPicks()`、`ctSchoolCal()`；`buildAnnParts()` 多一個參數 `calParts`。
+
 ## v1.19.0（2026-11-23）
 
 - 新增：🎵 跳舞音樂。🎡 彩色轉盤**計時中**一邊跳舞一邊播放音樂（柯北老師提供的歌曲，重複播放）。

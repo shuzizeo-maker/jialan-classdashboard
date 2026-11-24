@@ -522,6 +522,8 @@ function defaults() {
     prizes: [], // 獎品清單（所有班級共用）
     apps: defaultApps(), // 🧩 應用中心（所有班級共用）
     schoolDays: [], // 🎌 本校自訂放假／補課（所有班級共用）
+    schoolCal: defaultSchoolCal(), // 📅 學校行事曆（GAS 網址、天數、排除關鍵字、活動快取：所有班級共用）
+    scalPicks: [], // 📅 要放進公告的活動 id（每班各自）
     appsSeen: BUILTIN_APP_IDS.slice(), // 已經自動加過的內建應用（刪掉的不會再加回來）
     ui: { widgetTask: 't1', pageTask: 't1', tasksTab: 'hw', showHwDone: false, hwBrush: 'done' }
   };
@@ -565,6 +567,10 @@ function normalizeState(s) {
     merged.settings.holOnline = merged.settings.holOnline !== false;
     if (!HOL_DAYS_OPTIONS.includes(+merged.settings.holAnnDays)) merged.settings.holAnnDays = 3; else merged.settings.holAnnDays = +merged.settings.holAnnDays;
     merged.schoolDays = normalizeSchoolDays(merged.schoolDays);
+    // v1.20.0 📅 學校行事曆
+    merged.schoolCal = normalizeSchoolCal(merged.schoolCal);
+    merged.scalPicks = normalizeScalPicks(merged.scalPicks);
+    (Array.isArray(merged.classes) ? merged.classes : []).forEach(c => { if (c && c.data) c.data.scalPicks = normalizeScalPicks(c.data.scalPicks); });
     // v1.13.0 金幣存摺：舊資料補上 earned／spent、兌換紀錄等欄位
     merged.prizes = normalizePrizes(merged.prizes);
     fixClassBook(merged);
@@ -580,22 +586,275 @@ function normalizeState(s) {
   }
 }
 
+/* ---------------- 📅 學校行事曆（v1.20.0） ----------------
+ * 資料來源：老師自己部署的 Google Apps Script 網頁應用程式（scripts/school-calendar-gas.gs），
+ *   用老師的 Google 帳號讀學校日曆，回傳 JSON；日曆不用公開、沒有 CORS 問題。
+ *   fetch(網址?days=N, { signal, cache: 'no-store' })，不加自訂 header（不會觸發 preflight）。
+ * state.schoolCal（所有班級共用、包含在備份裡、開始新學年保留）：
+ *   { url, days（1～30，預設 7）, exclude（排除關鍵字）, excludeOn, cache: { events, calendarName, updatedAt, fetchedAt, error, errorAt } }
+ * state.scalPicks（每班各自）：勾選要放進跑馬燈公告的活動 id。新抓到的活動一律「不勾」（避免教師專屬活動誤上公告）。
+ * 公告：只放「已勾選、沒被排除、日期在今天～今天＋天數−1」的活動；過期的自動消失。
+ * 兩個地方都可以勾：教師控制台「📅 學校行事曆」、點公告打開的「基本資料」（手寫公告下面），同一份資料。
+ */
+const SCAL_DAYS_DEFAULT = 7, SCAL_DAYS_MIN = 1, SCAL_DAYS_MAX = 30;
+const SCAL_CAL_ID = 'c_e5107a5c48d5f34dfbe44359b98e0fa6fe034002f45eae1e60cb8e8a7449e521@group.calendar.google.com';
+const SCAL_AUTO_MS = 60 * 60 * 1000;   // 自動更新：超過 1 小時（或換日）
+const SCAL_GAS_CODE = "/**\n * 嘉蘭班級儀表板：📅 學校行事曆橋接（Google Apps Script 網頁應用程式）\n *\n * 用途：用「您自己的 Google 帳號」讀學校的 Google 日曆，回傳 JSON 給儀表板。\n *       日曆不用公開，也沒有 CORS 問題（儀表板直接 fetch 這個網址）。\n *\n * 3 分鐘設定：\n *   1. 用看得到學校日曆的 Google 帳號打開 https://script.google.com →「新專案」。\n *   2. 把這整個檔案貼進 Code.gs（取代原本的內容），按 💾 儲存。\n *      （日曆 ID 不同時，改下面的 CALENDAR_ID。）\n *   3. 右上角「部署」→「新增部署作業」→ 類型選「網頁應用程式」：\n *        執行身分：我（您的帳號）\n *        誰可以存取：所有人\n *      按「部署」→ 第一次會要求授權（選帳號 →「進階」→「前往（不安全）」→「允許」）。\n *   4. 複製「網頁應用程式網址」（https://script.google.com/macros/s/……/exec），\n *      貼到儀表板「教師控制台 → 📅 學校行事曆」，按「🔄 立即更新」。\n *   之後改了程式要「部署 → 管理部署作業 → ✏️ → 版本：新版本」，網址才會用到新程式。\n *\n * 網址參數：?days=N   今天起 N 天（含今天，預設 7，限制 1～30）\n * 回傳：{ ok: true, calendarName, updatedAt, days, events: [ { id, title, start, end, allDay, location } ] }\n *   start／end：全天活動是 YYYY-MM-DD（end＝最後一天，含當天）；有時間的是 YYYY-MM-DDTHH:mm；都是台灣時間。\n *   id：活動 ID＋'_'＋開始日期（重複活動每一次都可以分別勾選）。\n * 錯誤：{ ok: false, error: '說明' }\n * 只回傳標題、時間、地點，不回傳活動說明和參加者。\n */\nvar CALENDAR_ID = 'c_e5107a5c48d5f34dfbe44359b98e0fa6fe034002f45eae1e60cb8e8a7449e521@group.calendar.google.com';\nvar TZ = 'Asia/Taipei';\nvar DAY_MS = 24 * 60 * 60 * 1000;\nvar MAX_EVENTS = 300;\n\nfunction doGet(e) {\n  try {\n    var days = parseDays_(e && e.parameter ? e.parameter.days : '');\n    var cal = CalendarApp.getCalendarById(CALENDAR_ID);\n    if (!cal) {\n      return json_({ ok: false, error: '找不到日曆：請確認 CALENDAR_ID，以及部署這個程式的帳號看得到這個日曆' });\n    }\n    // 台灣時間「今天 00:00:00」到「今天＋days−1 的 23:59:59」（台灣沒有日光節約時間）\n    var todayKey = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');\n    var start = new Date(todayKey + 'T00:00:00+08:00');\n    var end = new Date(start.getTime() + days * DAY_MS - 1000);\n    var list = cal.getEvents(start, end);\n    var events = [];\n    for (var i = 0; i < list.length && events.length < MAX_EVENTS; i++) {\n      events.push(eventJson_(list[i]));\n    }\n    events.sort(function (a, b) { return a.start < b.start ? -1 : a.start > b.start ? 1 : 0; });\n    return json_({\n      ok: true,\n      calendarName: cal.getName(),\n      updatedAt: Utilities.formatDate(new Date(), TZ, \"yyyy-MM-dd'T'HH:mm:ssXXX\"),\n      days: days,\n      events: events\n    });\n  } catch (err) {\n    return json_({ ok: false, error: String(err && err.message || err) });\n  }\n}\n\nfunction parseDays_(v) {\n  var n = parseInt(v, 10);\n  if (isNaN(n)) n = 7;\n  return Math.max(1, Math.min(30, n));\n}\n\nfunction eventJson_(ev) {\n  var allDay = ev.isAllDayEvent();\n  var start, end;\n  if (allDay) {\n    // 全天活動的日期以日曆的時區為準；結束日是「隔天 0 點」，減 1 毫秒變成最後一天\n    var ctz = Session.getScriptTimeZone();\n    var s = ev.getAllDayStartDate(), x = ev.getAllDayEndDate();\n    start = Utilities.formatDate(s, ctz, 'yyyy-MM-dd');\n    end = Utilities.formatDate(new Date(x.getTime() - 1), ctz, 'yyyy-MM-dd');\n    if (end < start) end = start;\n  } else {\n    start = Utilities.formatDate(ev.getStartTime(), TZ, \"yyyy-MM-dd'T'HH:mm\");\n    end = Utilities.formatDate(ev.getEndTime(), TZ, \"yyyy-MM-dd'T'HH:mm\");\n  }\n  return {\n    id: ev.getId() + '_' + start.slice(0, 10),\n    title: String(ev.getTitle() || '').trim(),\n    start: start,\n    end: end,\n    allDay: allDay,\n    location: String(ev.getLocation() || '').trim()\n  };\n}\n\nfunction json_(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}\n";
+function defaultSchoolCal() {
+  return { url: '', days: SCAL_DAYS_DEFAULT, exclude: '', excludeOn: true, cache: { events: [], calendarName: '', updatedAt: '', fetchedAt: 0, error: '', errorAt: 0 } };
+}
+const scalDays = v => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(SCAL_DAYS_MIN, Math.min(SCAL_DAYS_MAX, n)) : SCAL_DAYS_DEFAULT; };
+const SCAL_DK = /^\d{4}-\d{2}-\d{2}$/, SCAL_DT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+// 一筆活動（GAS 回傳或快取）→ 乾淨的格式；格式不對回傳 null
+function scalEvent(x) {
+  if (!x || typeof x !== 'object') return null;
+  const start = String(x.start || '').slice(0, 16);
+  if (!SCAL_DK.test(start) && !SCAL_DT.test(start)) return null;
+  const allDay = typeof x.allDay === 'boolean' ? x.allDay : SCAL_DK.test(start);
+  let end = String(x.end || '').slice(0, 16);
+  if (!SCAL_DK.test(end) && !SCAL_DT.test(end)) end = start;
+  if (allDay) { end = end.slice(0, 10); if (end < start.slice(0, 10)) end = start.slice(0, 10); }
+  else if (end < start) end = start;
+  return {
+    id: String(x.id || '').slice(0, 300) || `${start}_${String(x.title || '').slice(0, 20)}`,
+    title: String(x.title || '').replace(/\s+/g, ' ').trim().slice(0, 80) || '（沒有標題）',
+    start: allDay ? start.slice(0, 10) : start, end, allDay,
+    location: String(x.location || '').replace(/\s+/g, ' ').trim().slice(0, 60)
+  };
+}
+function scalEvents(list) {
+  const seen = new Set(), out = [];
+  (Array.isArray(list) ? list : []).forEach(x => { const e = scalEvent(x); if (e && !seen.has(e.id)) { seen.add(e.id); out.push(e); } });
+  return out.sort((a, b) => a.start.localeCompare(b.start) || a.title.localeCompare(b.title)).slice(0, 300);
+}
+function normalizeSchoolCal(c) {
+  const d = defaultSchoolCal();
+  c = c && typeof c === 'object' ? c : {};
+  const k = c.cache && typeof c.cache === 'object' ? c.cache : {};
+  const url = String(c.url || '').trim();
+  return {
+    url: /^https:\/\//i.test(url) ? url.slice(0, 500) : '',
+    days: scalDays(c.days ?? d.days),
+    exclude: String(c.exclude || '').slice(0, 300),
+    excludeOn: c.excludeOn !== false,
+    cache: {
+      events: scalEvents(k.events), calendarName: String(k.calendarName || '').slice(0, 100), updatedAt: String(k.updatedAt || '').slice(0, 40),
+      fetchedAt: Number(k.fetchedAt) || 0, error: String(k.error || '').slice(0, 300), errorAt: Number(k.errorAt) || 0
+    }
+  };
+}
+function normalizeScalPicks(a) { return [...new Set((Array.isArray(a) ? a : []).map(x => String(x || '')).filter(Boolean))].slice(0, 500); }
+// GAS 回傳的 JSON → { ok, events, ... }；格式不對丟出錯誤（訊息給老師看）
+function parseSchoolCal(j) {
+  if (!j || typeof j !== 'object') throw new Error('回傳的資料不是 JSON');
+  if (j.ok === false) throw new Error('Apps Script 回報錯誤：' + String(j.error || '不明原因').slice(0, 200));
+  if (j.ok !== true || !Array.isArray(j.events)) throw new Error('回傳的資料格式不對（不是學校行事曆的 Apps Script？）');
+  return { events: scalEvents(j.events), calendarName: String(j.calendarName || '').slice(0, 100), updatedAt: String(j.updatedAt || '').slice(0, 40), days: scalDays(j.days) };
+}
+function scalUrl(base, days) {
+  const u = new URL(base); u.searchParams.set('days', String(scalDays(days))); return u.toString();
+}
+// 驗證老師貼上的網址
+function parseScalUrl(v) {
+  const t = String(v || '').trim();
+  if (!t) return { ok: true, url: '' };
+  let u; try { u = new URL(t); } catch (e) { return { ok: false, msg: '網址格式不對，請整段複製「網頁應用程式網址」' }; }
+  if (u.protocol !== 'https:') return { ok: false, msg: '網址要用 https:// 開頭' };
+  const warn = /^script\.google(usercontent)?\.com$/.test(u.hostname) && /\/exec$/.test(u.pathname) ? '' : /\/dev$/.test(u.pathname) ? '這是「測試部署」網址（/dev），只有您登入時能用；請用「部署」產生的 /exec 網址' : '';
+  return { ok: true, url: t, warn };
+}
+let scalFetching = false;
+async function scalRefresh({ force = false } = {}) {
+  const c = state.schoolCal;
+  if (!c.url) return { ok: false, msg: '還沒有設定 Apps Script 網址' };
+  if (scalFetching) return { ok: false, msg: '正在更新' };
+  if (typeof fetch !== 'function' || navigator.onLine === false) { c.cache.error = '沒有網路'; c.cache.errorAt = Date.now(); scalRender(); return { ok: false, msg: '沒有網路' }; }
+  scalFetching = true; scalRender();
+  const ac = typeof AbortController === 'function' ? new AbortController() : null, t = ac ? setTimeout(() => ac.abort(), 20000) : 0;
+  try {
+    const r = await fetch(scalUrl(c.url, c.days), { signal: ac ? ac.signal : undefined, cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const txt = await r.text();
+    let j; try { j = JSON.parse(txt); } catch (e) { throw new Error('回傳的不是 JSON：請確認部署時「誰可以存取」選「所有人」，而且網址是 /exec 結尾'); }
+    const data = parseSchoolCal(j);
+    Object.assign(c.cache, { events: data.events, calendarName: data.calendarName, updatedAt: data.updatedAt, fetchedAt: Date.now(), error: '', errorAt: 0 });
+    // 日曆上已經刪掉的活動，從這一班的勾選拿掉（其他班切換回來時看不到也不會公告）
+    const ids = new Set(data.events.map(e => e.id));
+    state.scalPicks = normalizeScalPicks(state.scalPicks).filter(id => ids.has(id));
+    save(); renderAll();
+    return { ok: true, count: data.events.length, force };
+  } catch (e) {
+    c.cache.error = e && e.name === 'AbortError' ? '連線逾時（20 秒）' : e && e.name === 'TypeError' ? '無法連線（網路中斷，或網址不正確）' : String(e && e.message || e);
+    c.cache.errorAt = Date.now(); save();
+    return { ok: false, msg: c.cache.error };
+  } finally { clearTimeout(t); scalFetching = false; scalRender(); }
+}
+// 自動更新：有網址、超過 1 小時或換日了才抓
+function scalAuto(now = new Date()) {
+  const c = state.schoolCal; if (!c || !c.url) return;
+  const k = c.cache, last = Math.max(k.fetchedAt || 0, k.errorAt || 0);
+  if (!last || Date.now() - last > SCAL_AUTO_MS || dkOf(new Date(last)) !== dkOf(now)) scalRefresh().catch(() => {});
+}
+// 今天～今天＋天數−1 之間（跨日活動只要還沒結束就算）
+function scalInRange(e, now = new Date(), days = state.schoolCal.days) {
+  const today = dkOf(now), last = dkAdd(today, scalDays(days) - 1);
+  return e.end.slice(0, 10) >= today && e.start.slice(0, 10) <= last;
+}
+const scalWords = v => String(v || '').split(/[,，、;；\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+const scalHit = (e, words) => words.some(w => (e.title + ' ' + e.location).toLowerCase().includes(w));
+function scalExcluded(e, c = state.schoolCal) { return c.excludeOn !== false && scalHit(e, scalWords(c.exclude)); }
+// 清單要顯示的活動（搜尋＋排除）；excluded＝被排除關鍵字擋掉的數量
+function scalVisible(q = scalQuery, now = new Date()) {
+  const c = state.schoolCal, words = scalWords(q);
+  const inRange = c.cache.events.filter(e => scalInRange(e, now));
+  const notEx = inRange.filter(e => !scalExcluded(e, c));
+  return { list: words.length ? notEx.filter(e => words.every(w => (e.title + ' ' + e.location).toLowerCase().includes(w))) : notEx, excluded: inRange.length - notEx.length, total: inRange.length };
+}
+// 日期文字：11/24（二）；今天／明天加前綴；有時間加 08:30；跨日 11/26（四）～11/27（五）
+function scalWhen(e, now = new Date()) {
+  const today = dkOf(now), tomorrow = dkAdd(today, 1);
+  const a = e.start.slice(0, 10), b = e.end.slice(0, 10);
+  const tm = e.allDay ? '' : ' ' + e.start.slice(11, 16);
+  const pre = a === today ? '今天 ' : a === tomorrow ? '明天 ' : '';
+  if (b > a) return `${pre}${holFmt(a)}${tm}～${holFmt(b)}`;
+  return `${pre}${holFmt(a)}${tm}`;
+}
+function buildSchoolCalParts(now = new Date(), picks = state.scalPicks) {
+  const c = state.schoolCal; if (!c || !c.cache) return [];
+  const on = new Set(normalizeScalPicks(picks));
+  return c.cache.events.filter(e => on.has(e.id) && scalInRange(e, now) && !scalExcluded(e, c)).map(e => `📅 ${scalWhen(e, now)} ${e.title}`);
+}
+function scalSetPick(id, on) {
+  const set = new Set(normalizeScalPicks(state.scalPicks));
+  if (on) set.add(id); else set.delete(id);
+  state.scalPicks = [...set]; save(); renderAll(); scalRender();
+}
+function scalPickVisible() {   // 全選「目前顯示」的（搜尋、排除後看得到的）
+  const set = new Set(normalizeScalPicks(state.scalPicks));
+  scalVisible().list.forEach(e => set.add(e.id));
+  state.scalPicks = [...set]; save(); renderAll(); scalRender();
+}
+function scalClearPicks() { state.scalPicks = []; save(); renderAll(); scalRender(); }
+function scalStatusText(now = Date.now()) {
+  const c = state.schoolCal, k = c.cache;
+  if (!c.url) return '還沒有設定 Apps Script 網址';
+  if (scalFetching) return '⏳ 更新中…';
+  const ago = t => { const m = Math.round((now - t) / 60000); return m < 1 ? '剛剛' : m < 60 ? `${m} 分鐘前` : `${new Date(t).getMonth() + 1}/${new Date(t).getDate()} ${pad(new Date(t).getHours())}:${pad(new Date(t).getMinutes())}`; };
+  const okT = k.fetchedAt ? `上次更新：${ago(k.fetchedAt)}（${k.calendarName ? esc(k.calendarName) + '，' : ''}${k.events.length} 筆）` : '還沒有更新過';
+  return k.error && k.errorAt >= (k.fetchedAt || 0) ? `⚠️ ${esc(k.error)}　${okT}` : okT;
+}
+/* ---- 畫面：兩個地方（控制台頁籤 prefix 'sc'、基本資料 prefix 'b'）共用 ---- */
+let scalQuery = '';
+const scalMounts = new Set();
+function scalListHTML(now = new Date()) {
+  const v = scalVisible(scalQuery, now), on = new Set(state.scalPicks), today = dkOf(now);
+  if (!state.schoolCal.cache.events.length) return `<p class="sub scal-empty">${state.schoolCal.cache.fetchedAt ? `接下來 ${state.schoolCal.days} 天沒有活動。` : '還沒有活動資料，請按「🔄 立即更新」。'}</p>`;
+  const rows = v.list.map(e => `<label class="scal-row${on.has(e.id) ? ' on' : ''}${e.start.slice(0, 10) === today ? ' today' : ''}"><input type="checkbox" data-scal-id="${esc(e.id)}"${on.has(e.id) ? ' checked' : ''}>
+    <span class="scal-when">${esc(scalWhen(e, now))}${e.allDay ? '<small>全天</small>' : ''}</span><b class="scal-title">${esc(e.title)}</b>${e.location ? `<small class="scal-loc">📍${esc(e.location)}</small>` : ''}</label>`).join('');
+  const note = [v.excluded ? `已排除 ${v.excluded} 筆（排除關鍵字）` : '', scalQuery.trim() ? `搜尋到 ${v.list.length} 筆` : '', `已勾選 ${buildSchoolCalParts(now).length} 筆會出現在公告`].filter(Boolean).join('・');
+  return (rows || '<p class="sub scal-empty">沒有符合的活動。</p>') + `<p class="sub scal-note">${note}</p>`;
+}
+function scalMount(el, pre) {
+  if (!el) return;
+  el.dataset.scalPre = pre; scalMounts.add(el);
+  const c = state.schoolCal;
+  if (pre === 'b') {
+    el.innerHTML = `<h4 style="margin:0 0 8px">📅 本週學校行事曆（勾選加入公告）${isMulti() ? `<b class="cls-note">勾選只影響「${esc(classLabel(curClassObj()))}」</b>` : ''}</h4>
+      <div id="bScNoUrl" style="display:${c.url ? 'none' : ''}"><p class="sub" style="margin:0 0 8px">還沒有設定學校行事曆（需要先部署一個 Google Apps Script，約 3 分鐘）。</p><button type="button" class="btn" id="bScGo">📅 前往設定學校行事曆</button></div>
+      <div id="bScMain" style="display:${c.url ? '' : 'none'}">
+        <div class="scal-tools"><input id="bScQ" class="scal-q" type="search" placeholder="🔍 搜尋標題或地點" value="${esc(scalQuery)}"><button type="button" class="btn" id="bScAll">全選目前顯示</button><button type="button" class="btn" id="bScNone">全部取消</button><button type="button" class="btn" id="bScRefresh">🔄 重新整理</button></div>
+        <small class="scal-status" id="bScStatus">${scalStatusText()}</small>
+        <div class="scal-list" id="bScList">${scalListHTML()}</div>
+      </div>`;
+    $('#bScGo').onclick = () => openConsole('scal');
+  } else {
+    el.innerHTML = `<p class="sub">用 Google Apps Script 讀學校的 Google 日曆（日曆不用公開）。勾選的活動會出現在首頁跑馬燈公告（📅 今天 11/24（二） 活動名稱）；<b>新抓到的活動預設不勾</b>，過期的自動消失。</p>
+      <h4 style="margin:6px 0 8px">⚙️ 設定（所有班級共用）</h4>
+      <div class="field"><span>Apps Script 網頁應用程式網址（https://script.google.com/macros/s/……/exec）</span>
+        <div class="exam-url-row"><input id="scUrl" type="url" value="${esc(c.url)}" placeholder="https://script.google.com/macros/s/……/exec" autocomplete="off"><button type="button" class="btn primary" id="scSave">儲存網址</button></div></div>
+      <div class="scal-tools"><label class="scal-days">顯示天數 <input id="scDays" type="number" min="${SCAL_DAYS_MIN}" max="${SCAL_DAYS_MAX}" value="${c.days}"> 天（今天起，1～30，預設 7）</label><button type="button" class="btn" id="scRefresh">🔄 立即更新</button></div>
+      <small class="scal-status" id="scStatus">${scalStatusText()}</small>
+      <div class="err" id="scErr"></div>
+      <h4 style="margin:14px 0 8px">📋 活動清單（勾選＝加入${isMulti() ? `「${esc(classLabel(curClassObj()))}」的` : ''}公告）</h4>
+      <div class="scal-tools"><input id="scQ" class="scal-q" type="search" placeholder="🔍 搜尋標題或地點" value="${esc(scalQuery)}"></div>
+      <div class="scal-tools"><input id="scEx" class="scal-q" value="${esc(c.exclude)}" placeholder="排除關鍵字，例：教師, 會議, 研習"><label class="chk" style="font-size:14px"><input type="checkbox" id="scExOn"${c.excludeOn !== false ? ' checked' : ''}> 排除（不顯示、不公告）</label></div>
+      <div class="scal-tools"><button type="button" class="btn" id="scAll">全選目前顯示</button><button type="button" class="btn" id="scNone">全部取消</button></div>
+      <div class="scal-list" id="scList">${scalListHTML()}</div>
+      <details class="scal-gas" id="scGas"><summary>📖 GAS 程式碼與 3 分鐘設定步驟</summary>
+        <ol class="scal-steps">
+          <li>用<b>看得到學校日曆</b>的 Google 帳號打開 <b>script.google.com</b> →「新專案」。</li>
+          <li>按下面的「📋 複製 GAS 程式碼」，貼進 <b>Code.gs</b>（取代原本的內容），按 💾 儲存。日曆 ID 已經填好（<code>${esc(SCAL_CAL_ID.slice(0, 14))}…</code>）。</li>
+          <li>右上角「<b>部署</b>」→「新增部署作業」→ 類型選「<b>網頁應用程式</b>」：執行身分「<b>我</b>」、誰可以存取「<b>所有人</b>」→「部署」。第一次要授權：選帳號 →「進階」→「前往（不安全）」→「允許」。</li>
+          <li>複製「網頁應用程式網址」（<b>/exec</b> 結尾），貼到上面，按「儲存網址」。</li>
+        </ol>
+        <p class="sub" style="font-size:12px">只會回傳活動的標題、時間、地點（不含說明、參加者）。網址等於「讀取這個日曆」的鑰匙，請不要公開分享。改了程式要「部署 → 管理部署作業 → ✏️ → 新版本」。</p>
+        <div class="scal-tools"><button type="button" class="btn" id="scCopy">📋 複製 GAS 程式碼</button></div>
+        <textarea id="scCode" class="scal-code" readonly rows="10">${esc(SCAL_GAS_CODE)}</textarea>
+      </details>`;
+    $('#scSave').onclick = () => {
+      const r = parseScalUrl($('#scUrl').value);
+      if (!r.ok) { $('#scErr').textContent = '⚠️ ' + r.msg; return; }
+      $('#scErr').textContent = r.warn ? '⚠️ ' + r.warn : '';
+      const changed = r.url !== c.url;
+      c.url = r.url;
+      if (changed) { c.cache = defaultSchoolCal().cache; state.scalPicks = []; }
+      save(); renderAll(); toast(r.url ? '✅ 網址已儲存，正在更新…' : '已清除網址');
+      if (r.url) scalRefresh({ force: true }); else scalRender();
+    };
+    $('#scDays').onchange = e => {
+      const n = scalDays(e.target.value); e.target.value = n;
+      if (n === c.days) return;
+      c.days = n; save(); renderAll(); scalRender();
+      if (c.url) scalRefresh({ force: true });
+    };
+    $('#scEx').oninput = e => { c.exclude = e.target.value.slice(0, 300); save(); renderAll(); scalRender(['scList', 'bScList']); };
+    $('#scExOn').onchange = e => { c.excludeOn = e.target.checked; save(); renderAll(); scalRender(); };
+    $('#scCopy').onclick = () => scalCopyCode();
+  }
+  const q = el.querySelector('.scal-q');
+  if (q) q.oninput = e => { scalQuery = e.target.value; scalRender(['scList', 'bScList']); };
+  const btn = id => el.querySelector('#' + (pre === 'b' ? 'bSc' : 'sc') + id);
+  if (btn('All')) btn('All').onclick = () => scalPickVisible();
+  if (btn('None')) btn('None').onclick = () => scalClearPicks();
+  if (btn('Refresh')) btn('Refresh').onclick = async () => { const r = await scalRefresh({ force: true }); toast(r.ok ? `📅 已更新：${r.count} 筆活動` : '⚠️ ' + r.msg, 3500); };
+  el.addEventListener('change', e => { const cb = e.target.closest('[data-scal-id]'); if (cb) scalSetPick(cb.dataset.scalId, cb.checked); });
+}
+// 重畫還在畫面上的清單與狀態（only：只重畫清單，搜尋框不動，避免打字時游標跳掉）
+function scalRender(only) {
+  [...scalMounts].forEach(el => {
+    if (!el.isConnected) { scalMounts.delete(el); return; }
+    const pre = el.dataset.scalPre, list = el.querySelector('#' + pre + 'ScList') || el.querySelector('#scList'), st = el.querySelector('#' + pre + 'ScStatus') || el.querySelector('#scStatus');
+    if (list) list.innerHTML = scalListHTML();
+    if (st) st.innerHTML = scalStatusText();
+    if (!only && pre === 'b') { const has = !!state.schoolCal.url; $('#bScNoUrl').style.display = has ? 'none' : ''; $('#bScMain').style.display = has ? '' : 'none'; }
+  });
+}
+async function scalCopyCode() {
+  let ok = false;
+  try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(SCAL_GAS_CODE); ok = true; } } catch (e) {}
+  if (!ok) { const t = $('#scCode'); if (t) { t.focus(); t.select(); try { ok = document.execCommand('copy'); } catch (e) {} } }
+  toast(ok ? '📋 已複製 GAS 程式碼，貼到 script.google.com 的 Code.gs' : '請在下面的框框按 Ctrl+A 全選、Ctrl+C 複製', 3500);
+  return ok;
+}
+function ctSchoolCal(el) { scalMount(el, 'sc'); }
+
 /* ---------------- 多班級（科任老師）資料層 ----------------
  * 目前班級的資料直接放在 state 最上層（欄位與 v1.7 完全相同，其他功能不用改）；
  * 其他班級的資料收在 state.classes[i].data，切換班級時互相交換。
  * 每班各自：學生名單（最大座號、空號、姓名）、金幣／物種／山林、每日任務與打卡、
  *           聯絡簿、作業檢查、加扣分紀錄、跑馬燈公告、班級名稱、任務選擇。
- * 全部共用：校名、學年學期、作息時間、週課表（含班級標記）、臨時調課、倒數日、
+ * 每班各自（v1.20.0）：📅 學校行事曆要放進公告的活動（scalPicks）。
+ * 全部共用：校名、學年學期、作息時間、週課表（含班級標記）、臨時調課、倒數日、📅 學校行事曆的設定與活動、
  *           天氣、環境音、我的音樂、備份設定、密碼、主題。
  */
-const CLASS_KEYS = ['students', 'done', 'contact', 'homework', '_hwMigrated', 'forest', 'log', 'taskDefs', 'attendance', 'redemptions', 'coinManual', 'coinDaily'];
+const CLASS_KEYS = ['students', 'done', 'contact', 'homework', '_hwMigrated', 'forest', 'log', 'taskDefs', 'attendance', 'redemptions', 'coinManual', 'coinDaily', 'scalPicks'];
 const CLASS_SETTINGS = ['className', 'maxSeat', 'vacant', 'names', 'announcement'];
 const CLASS_UI = ['widgetTask', 'pageTask'];
 const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
 function freshClassData(name, { maxSeat = 20, vacant = [], taskDefs } = {}) {
   return {
     students: {}, done: {}, contact: {}, homework: [], _hwMigrated: true, attendance: {},
-    redemptions: [], coinManual: [], coinDaily: {},
+    redemptions: [], coinManual: [], coinDaily: {}, scalPicks: [],
     forest: { level: 1, points: 0 }, log: [],
     taskDefs: clone(taskDefs || defaults().taskDefs),
     settings: { className: String(name || ''), maxSeat: Number(maxSeat) || 20, vacant: [...(vacant || [])], names: {}, announcement: '' },
@@ -625,6 +884,7 @@ function putClassData(st, data) {
   st.attendance = normalizeAttendance(st.attendance);
   if (!Array.isArray(st.homework)) st.homework = [];
   if (!Array.isArray(st.log)) st.log = [];
+  st.scalPicks = normalizeScalPicks(st.scalPicks);
   if (!Array.isArray(st.taskDefs)) st.taskDefs = f.taskDefs;
   st.forest = { level: 1, points: 0, ...(st.forest || {}) };
   if (!Array.isArray(st.settings.vacant)) st.settings.vacant = [];
@@ -1255,7 +1515,7 @@ document.addEventListener('click', e => {
 });
 // 新學年：每一班的學生資料都清空，班級清單、週課表與班級標記保留
 function newYearReset() {
-  const clear = () => ({ students: {}, done: {}, contact: {}, homework: [], log: [], attendance: {}, forest: { level: 1, points: 0 }, redemptions: [], coinManual: [], coinDaily: {} });
+  const clear = () => ({ students: {}, done: {}, contact: {}, homework: [], log: [], attendance: {}, forest: { level: 1, points: 0 }, redemptions: [], coinManual: [], coinDaily: {}, scalPicks: [] });
   Object.assign(state, clear(), { ttOverrides: {} });
   Object.assign(state.settings, { names: {}, vacant: [], schoolYear: '', semester: '' });
   classList().forEach(c => {
@@ -1470,11 +1730,12 @@ function buildCountdownParts(countdowns, max = 3) {
     .map(({ c, d }) => d === 0 ? `⏳ 今天就是${c.name}！` : `⏳ 距離${c.name}還有 ${d} 天`);
 }
 // taskSeats：每日任務只算今天有到的人（請假的同學不會被列在「尚未…」）；attPart：點名的今日缺席
-function buildAnnParts(announcement, taskDefs, seats, doneRec, homework, countdowns, taskSeats = seats, attPart = '', holParts = []) {
+function buildAnnParts(announcement, taskDefs, seats, doneRec, homework, countdowns, taskSeats = seats, attPart = '', holParts = [], calParts = []) {
   const ann = (announcement || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   if (attPart) ann.push(attPart);
   ann.push(...buildCountdownParts(countdowns));
   ann.push(...(holParts || []));   // 🎌 放假、⚠️ 補班
+  ann.push(...(calParts || []));   // 📅 學校行事曆（老師勾選的活動）
   const auto = [];
   if (taskSeats.length) {
     (taskDefs || []).forEach(t => {
@@ -1534,7 +1795,7 @@ function renderHeader() {
   const attPart = s.attAnnounce !== false ? buildAttAnnPart(att, s.names, !!s.attNames) : '';
   const offToday = isOffDay(new Date());
   // 放假日不列「尚未完成的每日任務」（大家都不在學校）
-  const parts = buildAnnParts(withClassName(s.announcement, s.school, s.className), state.taskDefs, seats, todayDone(), state.homework, state.countdowns, offToday ? [] : presentSeats(), attPart, buildHolidayParts());
+  const parts = buildAnnParts(withClassName(s.announcement, s.school, s.className), state.taskDefs, seats, todayDone(), state.homework, state.countdowns, offToday ? [] : presentSeats(), attPart, buildHolidayParts(), buildSchoolCalParts());
   renderAttChip(att);
   const text = parts.length ? parts.join('　　★　　') : '（尚無公告，老師可以點這裡輸入）';
   const annEl = $('#annText');
@@ -1544,7 +1805,7 @@ function renderHeader() {
     if (parts.length) {
       // 依公告類型上高亮色：老師公告＝螢光黃、未繳＝亮粉紅、待訂正＝亮橘、每日任務未完成＝亮青
       annEl.innerHTML = parts.map(p => {
-        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : p.startsWith('⏳') ? 'ann-cd' : p.startsWith('🙋') ? 'ann-att' : p.startsWith('🎌') ? 'ann-hol' : p.startsWith('⚠️') ? 'ann-work' : 'ann-note';
+        const c = p.startsWith('📕') ? 'ann-miss' : p.startsWith('✏️') ? 'ann-fix' : p.startsWith('📝') ? 'ann-task' : p.startsWith('⏳') ? 'ann-cd' : p.startsWith('🙋') ? 'ann-att' : p.startsWith('🎌') ? 'ann-hol' : p.startsWith('⚠️') ? 'ann-work' : p.startsWith('📅') ? 'ann-cal' : 'ann-note';
         return `<b class="${c}">${esc(p)}</b>`;
       }).join('<i class="ann-sep">　　★　　</i>');
     } else annEl.textContent = text;
@@ -2078,7 +2339,7 @@ function tick() {
     updateSky();
     if (d.getMinutes() % 30 === 0) loadWeather();
     if (d.getHours() === 0 && d.getMinutes() === 0) renderAll();
-    if (d.getMinutes() === 0 && holHourKey !== d.getHours()) { holHourKey = d.getHours(); refreshHolidays().catch(() => {}); }
+    if (d.getMinutes() === 0 && holHourKey !== d.getHours()) { holHourKey = d.getHours(); refreshHolidays().catch(() => {}); scalAuto(); }
     try { maybeAutoBackup(); } catch (_) {}
   }
 }
@@ -4751,7 +5012,7 @@ function teacherOpen(tab, focusSel) {
 let consoleTab = 'basic';
 function openConsole(tab) {
   if (tab) consoleTab = tab;
-  const tabs = [['basic', '基本資料'], ['classes', '班級管理'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['holiday', '🎌 假日'], ['tasks', '每日任務'], ['points', '加扣金幣／兌換'], ['apps', '🧩 應用中心'], ['data', '資料管理'], ['notes', '📜 更新紀錄']];
+  const tabs = [['basic', '基本資料'], ['classes', '班級管理'], ['seats', '座號與名單'], ['timetable', '週課表'], ['schedule', '作息時間'], ['holiday', '🎌 假日'], ['scal', '📅 學校行事曆'], ['tasks', '每日任務'], ['points', '加扣金幣／兌換'], ['apps', '🧩 應用中心'], ['data', '資料管理'], ['notes', '📜 更新紀錄']];
   openModal(`<button class="close" data-close>✕</button>
     <h2>🛠️ 教師控制台</h2><p class="sub">TEACHER CONSOLE・修改後按「儲存」立即生效</p>
     ${isMulti() && classList().length > 1 ? `<div class="ct-class"><span>目前班級</span><select id="ctClassSel">${classList().map(c => `<option value="${esc(c.id)}"${c.id === state.curClass ? ' selected' : ''}>${esc(classLabel(c))}</option>`).join('')}</select><small>名單、公告、每日任務、加扣金幣都是改這一班</small></div>` : ''}
@@ -4760,7 +5021,7 @@ function openConsole(tab) {
   $$('[data-ct]').forEach(b => b.onclick = () => openConsole(b.dataset.ct));
   const sel = $('#ctClassSel');
   if (sel) sel.onchange = () => { switchClass(sel.value); openConsole(consoleTab); };
-  ({ basic: ctBasic, classes: ctClasses, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, holiday: ctHoliday, tasks: ctTasks, points: ctPoints, apps: ctApps, data: ctData, notes: ctNotes })[consoleTab]($('#ctBody'));
+  ({ basic: ctBasic, classes: ctClasses, seats: ctSeats, timetable: ctTimetable, schedule: ctSchedule, holiday: ctHoliday, scal: ctSchoolCal, tasks: ctTasks, points: ctPoints, apps: ctApps, data: ctData, notes: ctNotes })[consoleTab]($('#ctBody'));
 }
 
 function ctBasic(el) {
@@ -4770,6 +5031,7 @@ function ctBasic(el) {
     <div class="field"><span>📢 跑馬燈公告（可以輸入多則，一行一則，會在畫面左上角輪流捲動）${isMulti() ? `<b class="cls-note">只顯示在「${esc(classLabel(curClassObj()))}」</b>` : ''}</span>
       <textarea id="bAnn" placeholder="例如：明天穿運動服&#10;星期五校外教學，記得帶水壺">${esc(s.announcement)}</textarea></div>
     <label class="chk" style="margin:-4px 0 14px;font-size:14px"><input type="checkbox" id="bStuEdit" ${s.studentEdit ? 'checked' : ''}> 允許不輸入密碼就新增／刪除聯絡簿、倒數日（不勾選比較安全，學生無法亂寫）</label>
+    <div class="scal-box" id="bScal"></div>
     <div class="field"><span>學校名稱</span><input id="bSchool" value="${esc(s.school)}"></div>
     <div class="field"><span>${isMulti() ? '目前班級名稱（其他班請到「班級管理」改）' : '班級名稱'}</span><input id="bClass" value="${esc(s.className)}"></div>
     ${termFields(s, 'b')}
@@ -4823,6 +5085,7 @@ function ctBasic(el) {
     </div>
     <div class="err" id="bErr"></div>
     <div class="modal-actions"><button class="primary" id="bSave">儲存</button></div>`;
+  scalMount($('#bScal'), 'b');
   $('#bWhlUp').onclick = () => $('#bWhlFile').click();
   $('#bDmOn').onchange = e => dmToggle(e.target.checked);
   $('#bDmVol').oninput = e => { dmSetVol(e.target.value); $('#bDmVolV').textContent = state.settings.danceMusicVol + '%'; };
@@ -6338,6 +6601,7 @@ renderAll();
 try { const raw = localStorage.getItem(KEY); if (raw && !Array.isArray(JSON.parse(raw).classes)) save(); } catch (e) {}
 tick();
 setInterval(tick, 1000);
+setTimeout(() => scalAuto(), 4000);   // 📅 開啟後自動更新學校行事曆（有設定網址、超過 1 小時才抓）
 setTimeout(() => { refreshHolidays().catch(() => {}); }, 2500);
 loadWheelChar().catch(() => {});   // 🎡 轉盤：讀老師上傳的角色圖片   // 🎌 內建以外的年份從網路補
 loadWeather();
@@ -6350,8 +6614,8 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.19.0';
-const APP_UPDATED = '2026-11-23';
+const APP_VERSION = '1.20.0';
+const APP_UPDATED = '2026-11-24';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
@@ -6364,6 +6628,18 @@ const APP_UPDATED = '2026-11-23';
  * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
  */
 const RELEASE_NOTES = [
+  { v: '1.20.0', d: '2026-11-24',
+    add: [
+      '📅 學校行事曆：把學校 Google 日曆接上儀表板（教師控制台多了「📅 學校行事曆」分頁）。只要部署一次 Google Apps Script（約 3 分鐘，步驟和程式碼都在分頁裡，可以一鍵複製），日曆不用公開。',
+      '勾選要讓學生知道的活動，就會出現在首頁跑馬燈，例如「📅 今天 11/24（二） 08:30 朝會」「📅 明天 11/25（三） 校外教學」；過期的活動自動消失。',
+      '點首頁公告打開的「基本資料」，手寫公告下面也可以直接勾選本週活動，和「📅 學校行事曆」分頁是同一份資料。'
+    ],
+    change: [
+      '新抓到的活動預設「不勾」，避免老師的會議、研習誤上公告；可以用關鍵字搜尋、設定排除關鍵字（例如：教師, 會議, 研習），或「全選目前顯示」「全部取消」。',
+      '顯示天數預設 7 天（今天起），可以改成 1～30 天。科任老師（多班級）每一班可以各自勾選要公告的活動；網址和活動資料所有班級共用。'
+    ],
+    remove: [],
+    fix: [] },
   { v: '1.19.0', d: '2026-11-23',
     add: [
       '🎵 彩色轉盤倒數時，會一邊跳舞一邊播放跳舞音樂（重複播放）。按「暫停」音樂停住，再按「開始」接著播；時間到時先停音樂再響鈴，鈴聲聽得很清楚。',
@@ -6530,7 +6806,7 @@ if (typeof globalThis !== 'undefined') {
     Fs: globalThis.__jlFs,
     
     APP_VERSION, askConfirm, addCoins, stu, fixStudentBook, fixClassBook, normalizePrizes, redeemCoins, undoRedemption, coinRecord, coinSummary, coinRecordText, coinRecordCSV, openCoinBook, openRedeem, renderStudents, CLASS_KEYS,
-    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, whlDance, whlDanceKind, whlIsAppleWebKit, whlVisible, whlStopDance, WHL_DANCE, dm, dmSync, dmStop, dmWanted, dmUserAudio, dmToggle, dmBtnClick, dmSetVol, dmVol, dmPreview, dmStopPreview, dmRestore, DM_SRC, DM_RESTORE_MS, getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, setMusicPlayingId: v => { musicPlayingId = v; }, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, whlDance, whlDanceKind, whlIsAppleWebKit, whlVisible, whlStopDance, WHL_DANCE, dm, dmSync, dmStop, dmWanted, dmUserAudio, dmToggle, dmBtnClick, dmSetVol, dmVol, dmPreview, dmStopPreview, dmRestore, DM_SRC, DM_RESTORE_MS, getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, setMusicPlayingId: v => { musicPlayingId = v; }, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, SCAL_GAS_CODE, SCAL_CAL_ID, SCAL_DAYS_DEFAULT, defaultSchoolCal, normalizeSchoolCal, normalizeScalPicks, scalEvent, scalEvents, parseSchoolCal, scalUrl, parseScalUrl, scalRefresh, scalAuto, scalInRange, scalExcluded, scalVisible, scalWhen, buildSchoolCalParts, scalSetPick, scalPickVisible, scalClearPicks, scalStatusText, scalRender, scalCopyCode, ctSchoolCal, setScalQuery: q => { scalQuery = q; }, getScalQuery: () => scalQuery, newYearReset, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,

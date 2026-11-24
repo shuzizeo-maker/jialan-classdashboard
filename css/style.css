@@ -1113,6 +1113,7 @@ a.tut-link { text-decoration: none; display: inline-block; color: inherit; }
 .modal-actions a.tut-link { margin-right: auto; }
 
 /* ===== 🎌 國定假日（v1.16.0） ===== */
+.marquee .ann-cal { color: #9fd3ff; text-shadow: 0 0 10px rgba(159,211,255,.65), 0 2px 4px rgba(0,0,0,.7); }
 .marquee .ann-hol { color: #ff8a8a; text-shadow: 0 0 10px rgba(255,138,138,.65), 0 2px 4px rgba(0,0,0,.7); }
 .marquee .ann-work { color: #ffd166; text-shadow: 0 0 10px rgba(255,209,102,.6), 0 2px 4px rgba(0,0,0,.7); }
 .np-name.np-hol { color: #ffb0b0; }
@@ -1192,3 +1193,22 @@ body.exam-open .whl-dancer { visibility: hidden; }
 .dm-set .dm-vol { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
 .dm-set .dm-vol input[type=range] { flex: 1; min-width: 120px; }
 .dm-set .dm-vol b { min-width: 3.2em; text-align: right; }
+
+/* v1.20.0 📅 學校行事曆 */
+.scal-box { margin: 0 0 16px; padding: 12px 14px; border: 1px dashed rgba(120,170,255,.55); border-radius: 12px; background: rgba(120,170,255,.06); }
+.scal-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+.scal-tools .scal-q { flex: 1; min-width: 180px; }
+.scal-days input { width: 64px; }
+.scal-status { display: block; margin: 4px 0 8px; opacity: .85; }
+.scal-list { max-height: 320px; overflow: auto; border-radius: 10px; }
+.scal-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 7px 10px; border-bottom: 1px solid rgba(128,128,128,.18); cursor: pointer; font-size: 15px; }
+.scal-row.on { background: rgba(120,200,140,.14); }
+.scal-row.today .scal-when { font-weight: 700; }
+.scal-row .scal-when { min-width: 11em; white-space: nowrap; }
+.scal-row .scal-when small { margin-left: 6px; padding: 0 6px; border-radius: 6px; background: rgba(128,128,128,.2); font-size: 12px; }
+.scal-row .scal-loc { opacity: .75; }
+.scal-note, .scal-empty { margin: 6px 2px 0; font-size: 12px; }
+.scal-gas { margin-top: 14px; }
+.scal-gas summary { cursor: pointer; font-weight: 700; }
+.scal-steps { margin: 8px 0; padding-left: 22px; line-height: 1.7; font-size: 14px; }
+.scal-code { width: 100%; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: pre; }
