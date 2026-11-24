@@ -795,7 +795,8 @@ function scalMount(el, pre) {
         </ol>
         <p class="sub" style="font-size:12px">只會回傳活動的標題、時間、地點（不含說明、參加者）。網址等於「讀取這個日曆」的鑰匙，請不要公開分享。改了程式要「部署 → 管理部署作業 → ✏️ → 新版本」。</p>
         <div class="scal-tools"><button type="button" class="btn" id="scCopy">📋 複製 GAS 程式碼</button></div>
-        <textarea id="scCode" class="scal-code" readonly rows="10">${esc(SCAL_GAS_CODE)}</textarea>
+        <p class="sub scal-code-hint" style="font-size:12px;margin:8px 0 4px">👇 下面就是完整程式碼（共 ${SCAL_GAS_CODE.split('\n').length} 行），可以上下捲動閱讀、反白看日曆 ID；要部署時按上面的「📋 複製 GAS 程式碼」。</p>
+        <textarea id="scCode" class="scal-code" readonly rows="12" wrap="off" spellcheck="false" autocomplete="off" aria-label="GAS 程式碼（唯讀）">${esc(SCAL_GAS_CODE)}</textarea>
       </details>`;
     $('#scSave').onclick = () => {
       const r = parseScalUrl($('#scUrl').value);
@@ -6625,7 +6626,7 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.20.1';
+const APP_VERSION = '1.20.2';
 const APP_UPDATED = '2026-11-24';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -6639,6 +6640,9 @@ const APP_UPDATED = '2026-11-24';
  * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
  */
 const RELEASE_NOTES = [
+  { v: '1.20.2', d: '2026-11-24',
+    add: [], change: ['GAS 程式碼框改成深色底、亮色等寬字，高度約 240px，可以上下左右捲動、反白；上方多一行說明共有幾行。'], remove: [],
+    fix: ['「📅 學校行事曆」→「📖 GAS 程式碼與 3 分鐘設定步驟」裡的程式碼框看不到字（白底白字），只能按複製。現在打開就看得清楚，「📋 複製 GAS 程式碼」一樣可以用。'] },
   { v: '1.20.1', d: '2026-11-24',
     add: [], change: ['「📅 學校行事曆」的天數、搜尋、排除關鍵字輸入框改成和其他欄位一樣的深色底、淺色字，按 Enter 或離開欄位時才套用天數。'], remove: [],
     fix: ['「📅 學校行事曆」的「顯示天數」看起來打不進數字：其實有打進去，但框框是白底、字也是白色，所以看不到。現在看得清楚，可以反白、刪掉、直接打 14、3、30 或按上下微調；清空後離開會回到原本的天數，超過 30 會變成 30、小於 1 會變成 1。公告編輯畫面的搜尋框也一併修好。'] },

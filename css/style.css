@@ -1217,3 +1217,13 @@ body.exam-open .whl-dancer { visibility: hidden; }
 .scal-gas summary { cursor: pointer; font-weight: 700; }
 .scal-steps { margin: 8px 0; padding-left: 22px; line-height: 1.7; font-size: 14px; }
 .scal-code { width: 100%; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: pre; }
+/* v1.20.2：程式碼框原本沒有底色 → 瀏覽器白底＋畫面淺色字（color: inherit）→ 看不到程式碼。改成深色程式碼捲動框 */
+.scal-gas .scal-code {
+  display: block; box-sizing: border-box; height: 240px; min-height: 160px; max-height: 70vh; resize: vertical;
+  margin: 0; padding: 12px 14px; border: 1px solid rgba(140,170,200,.45); border-radius: 10px;
+  background: #0d1117; color: #e6edf3; color-scheme: dark; caret-color: #e6edf3;
+  font-size: 13px; line-height: 1.55; tab-size: 2; white-space: pre; overflow: auto; overflow-wrap: normal;
+  user-select: text; -webkit-user-select: text; cursor: text; opacity: 1; visibility: visible;
+}
+.scal-gas .scal-code::selection { background: #2f6feb; color: #fff; }
+.scal-gas .scal-code:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
