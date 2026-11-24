@@ -42,16 +42,36 @@ function defaultExamApp(url = DEFAULT_EXAM_URL, pinned = true) {
  *   嘉蘭樂學島（Google 協作平台）回應 X-Frame-Options: DENY → 只能新分頁
  *   嘉蘭工具箱（GitHub Pages）沒有禁止嵌入 → 在儀表板裡打開
  *   儀表板教學網（Netlify）沒有禁止嵌入，但學習進度存在教學網自己的瀏覽器空間，嵌在別的網站裡會跟直接打開的進度分開 → 新分頁
+ * v1.21.0：📚 閱讀成果牆＋📖 閱讀牆使用教學（2026-11-24 用 curl 檢查）：
+ *   閱讀成果牆（Cloudflare Pages）沒有 X-Frame-Options，也沒有 CSP frame-ancestors，頁面裡也沒有跳出框架的程式 → 在儀表板裡打開（給全班看）；
+ *     心得資料存在成果牆自己的伺服器（/api/），嵌入或新分頁看到的是同一份；只有「班級代碼／老師登入」記在瀏覽器裡，嵌入時可能要再輸入一次。
+ *     全新安裝或升級時，最下面一排還有空位（最多 3 個）就幫忙釘選。
+ *   閱讀牆使用教學（Netlify）是給老師看的長篇教學 → 新分頁；成果牆的卡片和打開後的上方列也有「📖 使用教學」小連結。
  */
+const RW_WALL_URL = 'https://reading-wall.pages.dev/';
+const RW_GUIDE_URL = 'https://readingwall.netlify.app/#top';
 const TUTORIAL_URL = 'https://classboard-teaching.netlify.app/';
 const JL_APPS = [
   { id: 'jl-learn', name: '嘉蘭樂學島', emoji: '🏝️', url: 'https://sites.google.com/ttct.edu.tw/jalanlearn?usp=sharing', desc: '嘉蘭國小的學習網站（Google 協作平台）', cat: '課堂', openMode: 'newtab' },
   { id: 'jl-toolbox', name: '嘉蘭工具箱', emoji: '🧰', url: 'https://shuzizeo-maker.github.io/jialan-toolbox/', desc: '柯北老師整理的教學行政小工具，會持續增加', cat: '課堂', openMode: 'embed' },
-  { id: 'jl-guide', name: '儀表板教學網', emoji: '📘', url: TUTORIAL_URL, desc: '零基礎教學：一步一步學會用班級儀表板', cat: '其他', openMode: 'newtab' }
+  { id: 'jl-guide', name: '儀表板教學網', emoji: '📘', url: TUTORIAL_URL, desc: '零基礎教學：一步一步學會用班級儀表板', cat: '其他', openMode: 'newtab' },
+  { id: 'rw-wall', name: '閱讀成果牆', emoji: '📚', url: RW_WALL_URL, desc: '全班的閱讀心得與成果，投影給大家看', cat: '課堂', openMode: 'embed', pin: true },
+  { id: 'rw-guide', name: '閱讀牆使用教學', emoji: '📖', url: RW_GUIDE_URL, desc: '給老師看：閱讀成果牆的部署與使用教學', cat: '其他', openMode: 'newtab' }
 ];
 const BUILTIN_APP_IDS = ['exam', ...JL_APPS.map(a => a.id)];
-const jlApp = (a, order) => ({ ...a, pinned: false, order });
-const defaultApps = () => [defaultExamApp(), ...JL_APPS.map((a, i) => jlApp(a, i + 1))];
+const jlApp = (a, order, pinned = false) => { const { pin, ...rest } = a; return { ...rest, pinned: !!pinned, order }; };
+// 全新清單：監考＋內建應用；標了 pin 的（閱讀成果牆）在還有空位時釘選
+function jlDefaults(examPinned = true) {
+  let pins = examPinned ? 1 : 0;
+  return JL_APPS.map((a, i) => { const p = !!a.pin && pins < APP_MAX_PINNED; if (p) pins++; return jlApp(a, i + 1, p); });
+}
+const defaultApps = () => [defaultExamApp(), ...jlDefaults(true)];
+// 「📖 使用教學」小連結（閱讀成果牆：用 id 或網址判斷，老師自己加的成果牆也有）
+function appGuideUrl(a) {
+  if (!a) return '';
+  if (a.id === 'rw-wall') return RW_GUIDE_URL;
+  try { return new URL(a.url).host === 'reading-wall.pages.dev' ? RW_GUIDE_URL : ''; } catch (e) { return ''; }
+}
 // 把還沒加過的內建應用加進清單（插在前一個內建應用或監考後面），回傳更新後的 seen
 function addMissingBuiltins(apps, seen) {
   const s = new Set(Array.isArray(seen) ? seen.filter(x => typeof x === 'string') : []);
@@ -64,7 +84,7 @@ function addMissingBuiltins(apps, seen) {
     if (apps.some(a => a.id === b.id || key(a.url) === key(b.url))) return;
     let at = -1;
     for (let k = bi; k >= 0 && at < 0; k--) at = apps.findIndex(a => a.id === BUILTIN_APP_IDS[k]);
-    apps.splice(at + 1, 0, jlApp(b, 0));
+    apps.splice(at + 1, 0, jlApp(b, 0, !!b.pin && apps.filter(a => a.pinned).length < APP_MAX_PINNED));
   });
   apps.forEach((a, i) => { a.order = i; });
   return [...s];
@@ -75,7 +95,7 @@ function normalizeApps(list, settings = {}) {
   const hasBtn = typeof settings.examBtn === 'boolean';
   let apps;
   if (!Array.isArray(list)) {
-    apps = [defaultExamApp(sUrl.ok ? sUrl.url : DEFAULT_EXAM_URL, settings.examBtn !== false), ...JL_APPS.map((a, i) => jlApp(a, i + 1))];
+    apps = [defaultExamApp(sUrl.ok ? sUrl.url : DEFAULT_EXAM_URL, settings.examBtn !== false), ...jlDefaults(settings.examBtn !== false)];
   } else {
     const seen = new Set();
     apps = list.filter(a => a && typeof a === 'object').map((a, i) => {
@@ -6338,6 +6358,8 @@ function openApp(id) {
     ? '可能是網路斷了，或監考看板的網址換了。請確認網路後按「🔄 再試一次」；也可以用新分頁打開。網址可以在「教師控制台 → 基本資料 → 📝 監考看板」或「🧩 應用中心」修改。'
     : '可能是網路斷了，或這個網站不允許放在儀表板裡（有些網站會擋）。請按「↗ 用新分頁打開」；如果每次都這樣，可以到「教師控制台 → 🧩 應用中心」把開啟方式改成「用新分頁打開」。';
   const hint = $('#examEmbedHint'); if (hint) hint.style.display = isEx ? 'none' : '';
+  const gd = $('#examGuide'), gu = appGuideUrl(app);
+  if (gd) { gd.style.display = gu ? '' : 'none'; if (gu) gd.href = gu; else gd.removeAttribute('href'); }
   document.body.classList.add('exam-open');
   ov.style.display = 'flex';
   const fsb = $('#examFsBtn'); if (fsb) fsb.style.display = fsEnabled() ? '' : 'none';
@@ -6391,6 +6413,11 @@ function appCategories() {
   return ['全部', ...APP_CATS.filter(c => used.includes(c)), ...used.filter(c => !APP_CATS.includes(c))];
 }
 function appTileHTML(a) {
+  const g = appGuideUrl(a);
+  const tile = appTileBtnHTML(a);
+  return g ? `<div class="app-tile-wrap has-guide">${tile}<a class="at-guide" href="${esc(g)}" target="_blank" rel="noopener" title="閱讀成果牆的部署與使用教學（給老師看，用新分頁打開）">📖 使用教學</a></div>` : tile;
+}
+function appTileBtnHTML(a) {
   return `<button type="button" class="app-tile" data-open-app="${esc(a.id)}" data-cat="${esc(a.cat)}" data-q="${esc((a.name + ' ' + a.desc + ' ' + a.cat).toLowerCase())}">
     <span class="at-emoji">${esc(a.emoji)}</span><b class="at-name">${esc(a.name)}</b><small class="at-desc">${esc(a.desc || a.url.replace(/^https:\/\//, ''))}</small>
     <span class="at-tags">${a.pinned ? '<i>📌 已釘選</i>' : ''}<i>${a.openMode === 'newtab' ? '↗ 新分頁' : '🖥️ 在儀表板裡'}</i><i>${esc(a.cat)}</i></span></button>`;
@@ -6400,7 +6427,7 @@ function filterAppTiles() {
   let n = 0;
   $$('#appGrid .app-tile').forEach(t => {
     const show = (appCat === '全部' || t.dataset.cat === appCat) && (!q || t.dataset.q.includes(q));
-    t.style.display = show ? '' : 'none'; if (show) n++;
+    (t.closest('.app-tile-wrap') || t).style.display = show ? '' : 'none'; if (show) n++;
   });
   const em = $('#appEmpty'); if (em) em.style.display = n ? 'none' : '';
   $$('#appCats [data-cat]').forEach(c => c.classList.toggle('active', c.dataset.cat === appCat));
@@ -6626,7 +6653,7 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.20.2';
+const APP_VERSION = '1.21.0';
 const APP_UPDATED = '2026-11-24';
 (function showVersion() {
   const el = document.getElementById('appVer');
@@ -6640,6 +6667,13 @@ const APP_UPDATED = '2026-11-24';
  * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
  */
 const RELEASE_NOTES = [
+  { v: '1.21.0', d: '2026-11-24',
+    add: [
+      '🧩 應用中心多了「📚 閱讀成果牆」：全班的閱讀心得與成果，直接在儀表板裡打開投影給大家看（打開時環境音、音樂會先停）。最下面一排還有空位時會自動釘選，一鍵就能打開。',
+      '多了「📖 閱讀牆使用教學」（給老師看，用新分頁打開）；閱讀成果牆的卡片上、打開後的上方列也都有「📖 使用教學」小連結。'
+    ],
+    change: ['這兩個是預設應用：舊資料打開時自動補上，已經自己加過同一個網站的不會重複；刪掉後不會再加回來。在成果牆裡第一次可能要再輸入一次班級代碼或老師登入（資料本身是同一份）。'],
+    remove: [], fix: [] },
   { v: '1.20.2', d: '2026-11-24',
     add: [], change: ['GAS 程式碼框改成深色底、亮色等寬字，高度約 240px，可以上下左右捲動、反白；上方多一行說明共有幾行。'], remove: [],
     fix: ['「📅 學校行事曆」→「📖 GAS 程式碼與 3 分鐘設定步驟」裡的程式碼框看不到字（白底白字），只能按複製。現在打開就看得清楚，「📋 複製 GAS 程式碼」一樣可以用。'] },
@@ -6824,7 +6858,7 @@ if (typeof globalThis !== 'undefined') {
     Fs: globalThis.__jlFs,
     
     APP_VERSION, askConfirm, addCoins, stu, fixStudentBook, fixClassBook, normalizePrizes, redeemCoins, undoRedemption, coinRecord, coinSummary, coinRecordText, coinRecordCSV, openCoinBook, openRedeem, renderStudents, CLASS_KEYS,
-    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, whlDance, whlDanceKind, whlIsAppleWebKit, whlVisible, whlStopDance, WHL_DANCE, dm, dmSync, dmStop, dmWanted, dmUserAudio, dmToggle, dmBtnClick, dmSetVol, dmVol, dmPreview, dmStopPreview, dmRestore, DM_SRC, DM_RESTORE_MS, getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, setMusicPlayingId: v => { musicPlayingId = v; }, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, SCAL_GAS_CODE, scalDaysInput, scalDays, SCAL_CAL_ID, SCAL_DAYS_DEFAULT, defaultSchoolCal, normalizeSchoolCal, normalizeScalPicks, scalEvent, scalEvents, parseSchoolCal, scalUrl, parseScalUrl, scalRefresh, scalAuto, scalInRange, scalExcluded, scalVisible, scalWhen, buildSchoolCalParts, scalSetPick, scalPickVisible, scalClearPicks, scalStatusText, scalRender, scalCopyCode, ctSchoolCal, setScalQuery: q => { scalQuery = q; }, getScalQuery: () => scalQuery, newYearReset, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
+    RELEASE_NOTES, cmpVer, notesBetween, maybeShowWhatsNew, openWhatsNew, openReleaseNotes, whatsNewDue, getPtMode: () => ptMode, setPtMode: m => { ptMode = m; }, chooseDrawStyle, pickDrawSeat, startDraw, skipDrawAnim, closeDrawStage, getDrawAnim: () => drawAnim, getDrawn: () => drawn, DRAW_STYLES, DRAW_STYLE_KEYS, wheelTargetAngle, wheelPath, isl, islDraw, islVisible, islandMode, renderTimerStyle, updateIslPill, islFinish, islFrame, timer, wheelMode, whl, whlLit, whlSVG, whlHex, buildWheel, updateWheel, whlFinish, whlCharSrc, whlDance, whlDanceKind, whlIsAppleWebKit, whlVisible, whlStopDance, WHL_DANCE, dm, dmSync, dmStop, dmWanted, dmUserAudio, dmToggle, dmBtnClick, dmSetVol, dmVol, dmPreview, dmStopPreview, dmRestore, DM_SRC, DM_RESTORE_MS, getAmbCur: () => ambCur, getMusicPlayingId: () => musicPlayingId, setMusicPlayingId: v => { musicPlayingId = v; }, applyWheelChar, whlCharStateText, loadWheelChar, whlShrinkImage, setWheelChar, resetWheelChar, WHL_N, WHL_BULBS, WHL_DEFAULT_IMG, WHL_IDB_KEY, TIMER_STYLE_OPTIONS, timerSet, showTimer, idbGet, parseExamUrl, examUrl, openExam, closeExam, isExamOpen, renderExamBtn, DEFAULT_EXAM_URL, APP_UPDATED, HOL_BUILTIN, HOL_WORK_BUILTIN, HOL_CACHE_KEY, HOL_CDN, parseHolJSON, holYear, holCache, resetHolCache: () => { _holCache = null; }, refreshHolidays, schoolDayOn, dayInfo, isOffDay, isSchoolDay, effWd, nextSchoolDay, holRunAround, buildHolidayParts, upcomingHolidays, normalizeSchoolDays, holStatusText, upsertSchoolDay, deleteSchoolDay, ctHoliday, regularSchedule, todaySchedule, subjectOnDate, classOnDate, weekTableHTML, renderSchedule, renderHomeworkPanel, setSdEdit: v => { sdEditId = v; }, normalizeApps, defaultApps, JL_APPS, RW_WALL_URL, RW_GUIDE_URL, appGuideUrl, appTileHTML, jlDefaults, BUILTIN_APP_IDS, addMissingBuiltins, TUTORIAL_URL, syncExamMirror, appList, appById, pinnedApps, renderAppButtons, openApp, closeApp, openAppCenter, setAppPinned, moveApp, upsertApp, deleteApp, ctApps, APP_MAX_PINNED, appCategories, filterAppTiles, getAppCat: () => appCat, setAppCat: c => { appCat = c; }, setAppQuery: q => { appQuery = q; }, setApEdit: v => { apEditId = v; }, getExam: () => exam, defaultAnnouncement, isDefaultAnnouncement, migrateAnnouncement, OLD_DEFAULT_ANN, buildAnnParts, buildHwAnnParts, SCAL_GAS_CODE, scalDaysInput, scalDays, SCAL_CAL_ID, SCAL_DAYS_DEFAULT, defaultSchoolCal, normalizeSchoolCal, normalizeScalPicks, scalEvent, scalEvents, parseSchoolCal, scalUrl, parseScalUrl, scalRefresh, scalAuto, scalInRange, scalExcluded, scalVisible, scalWhen, buildSchoolCalParts, scalSetPick, scalPickVisible, scalClearPicks, scalStatusText, scalRender, scalCopyCode, ctSchoolCal, setScalQuery: q => { scalQuery = q; }, getScalQuery: () => scalQuery, newYearReset, markHwAllDone, markTaskAllDone, withClassName, buildCountdownParts, migrateTaskAnnounce, migrateHomework,
     todaySchedule, regularSchedule, applyDayOverride, clearDayOverride, getOverride, periodChanged, subjectOnDate, dateOfWeekday,
     normalizeMusic, parseMusicUrl, nameFromUrl, musicNextIndex, nextLoopMode, addUrlTrack, addFileTrackMeta, removeTrack, setMusicLoop, cycleMusicLoop, addMusicFiles, pickMusicFiles, pickMusicFolder, musicStoredSummary, musicUsesBrowserCopy, canPickMusicFolder, fmtMB, refreshMusicAvail, musicIdbGet: k => idbGet(k), MUSIC_MAX_FOLDER,
     musicStepId, musicAfterEndId, playTrack, stopMusic, pauseMusic, playAmbient, renderMusic, renderAmbient, refreshMusicAvail, idbGet, idbSet, idbDel, idbDelPrefix,

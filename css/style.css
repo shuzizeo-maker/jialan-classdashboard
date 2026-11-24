@@ -1088,6 +1088,11 @@ body.exam-open .isl-pill { animation-play-state: paused; }
 .app-tile .at-name { font-size: 17px; }
 .app-tile .at-desc { color: var(--muted); font-size: 13px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 .app-tile .at-tags { margin-top: auto; display: flex; gap: 4px; flex-wrap: wrap; }
+.app-tile-wrap { position: relative; display: flex; }
+.app-tile-wrap > .app-tile { flex: 1; width: 100%; padding-bottom: 44px; }
+/* v1.21.0：閱讀成果牆卡片右下角的「📖 使用教學」（深色主題：淺色字＋半透明深底，對比夠） */
+.app-tile-wrap .at-guide { position: absolute; right: 10px; bottom: 10px; z-index: 1; padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 700; text-decoration: none; color: #fff; background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.4); }
+.app-tile-wrap .at-guide:hover, .app-tile-wrap .at-guide:focus-visible { background: rgba(0,0,0,.65); outline: 2px solid var(--accent); outline-offset: 1px; }
 .app-tile .at-tags i { font-style: normal; font-size: 11px; padding: 1px 7px; border-radius: 99px; background: rgba(255,255,255,.14); color: var(--muted); }
 @media (max-width: 600px) { .app-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .app-tile { min-height: 116px; padding: 10px; } .app-tile .at-emoji { font-size: 30px; } }
 .exam-bar .exam-hint { color: rgba(255,255,255,.6); font-size: 12px; }
