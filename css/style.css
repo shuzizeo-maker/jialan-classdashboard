@@ -1232,3 +1232,21 @@ body.exam-open .whl-dancer { visibility: hidden; }
 }
 .scal-gas .scal-code::selection { background: #2f6feb; color: #fff; }
 .scal-gas .scal-code:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------- v1.21.1：最下面一排一定放得下，⛶ 全螢幕永遠看得到 ----------
+ * 原因：桌機版（寬度 > 1100px）這一排不換行，版權文字又不會縮（nowrap，約 350px）；
+ * 釘了 2～3 個應用後整排約 1330～1420px，比 1280px 寬的螢幕（含 1920×1080 開 150% 縮放）還寬，
+ * body 又是 overflow: hidden，右邊的「👁️ 簡潔」「⛶ 全螢幕」就被裁掉、捲也捲不到。
+ * 修法：版權文字改成「用剩下的空間」（放不下時尾巴變「…」，滑過去看得到全文），按鈕不縮、字不變小，
+ * 左右留白隨螢幕寬度微調；真的還是放不下就換到第二行（不會被裁掉）。 */
+.bottomnav { flex-wrap: wrap; row-gap: 2px; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.bottomnav button, .bottomnav #fsTopControls, .bottomnav #fsIframeControls { flex-shrink: 0; }
+.bottomnav button { padding: 6px clamp(6px, 0.75vw, 14px); }
+.bottomnav .spacer { display: none; }
+.bottomnav .copyright { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 0 clamp(4px, 0.8vw, 12px); }
+.bottomnav .copyright .cr-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bottomnav .copyright .app-ver { flex-shrink: 0; }
+.bottomnav .app-pin-btn { max-width: clamp(72px, 7.5vw, 120px); }
+@media (max-width: 1100px) {
+  .bottomnav .copyright { flex: 1 1 100%; order: 99; }
+}

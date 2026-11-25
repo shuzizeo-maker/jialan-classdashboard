@@ -6653,8 +6653,8 @@ setTimeout(() => { try { refreshMusicAvail(); } catch (_) {} }, 400);
  *   次版號：新增功能
  *   修正號：小修正、調整外觀
  */
-const APP_VERSION = '1.21.0';
-const APP_UPDATED = '2026-11-24';
+const APP_VERSION = '1.21.1';
+const APP_UPDATED = '2026-11-25';
 (function showVersion() {
   const el = document.getElementById('appVer');
   if (el) { el.textContent = `v${APP_VERSION}`; el.title = `班級儀表板 v${APP_VERSION}（更新於 ${APP_UPDATED}）`; }
@@ -6667,6 +6667,11 @@ const APP_UPDATED = '2026-11-24';
  * 不一樣就跳出一次「🆕 這次更新了什麼」，按「知道了」才記住。
  */
 const RELEASE_NOTES = [
+  { v: '1.21.1', d: '2026-11-25',
+    add: [],
+    change: ['最下面一排會依螢幕寬度自動調整：按鈕之間的留白跟著縮放（字不會變小），版權文字放不下時尾巴變成「…」（滑鼠移過去看得到全文）；真的放不下就換到第二行，不會被裁掉。'],
+    remove: [],
+    fix: ['教室電腦（例如 1280 寬的螢幕，或 1920×1080 開 150% 縮放）最下面一排太寬，右下角的「⛶ 全螢幕」「👁️ 簡潔」被擠到畫面外，只能把瀏覽器縮小才看得到。現在 100% 縮放就看得到整排。'] },
   { v: '1.21.0', d: '2026-11-24',
     add: [
       '🧩 應用中心多了「📚 閱讀成果牆」：全班的閱讀心得與成果，直接在儀表板裡打開投影給大家看（打開時環境音、音樂會先停）。最下面一排還有空位時會自動釘選，一鍵就能打開。',
